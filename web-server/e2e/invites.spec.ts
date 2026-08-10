@@ -196,4 +196,63 @@ test.describe('invite links', () => {
     // Not a redirect to /login: the invitee has no account to sign in with.
     expect(res.status()).toBe(200);
   });
+
+  // CLUSTOX: regression coverage for the same underlying bug as
+  // e2e/integration-link-status.spec.ts, on the post-signup sign-in path
+  // (see accept-invite.tsx's "CLUSTOX FIX" comment). Every other test in
+  // this file talks to the API directly and never touches AuthProvider's
+  // client-side session cache at all, so none of them would have caught
+  // this -- it only shows up through a real browser completing the actual
+  // form-submit -> sign-in -> client-side-navigate sequence.
+  test('a brand-new admin reaches a fully working, correctly-scoped Integrations page right after account creation, via the same client-side navigation the original bug lived in', async ({
+    page
+  }) => {
+    test.skip(!SUPERADMIN.password, 'SUPERADMIN_PASSWORD not set');
+    // Next dev mode JIT-compiles each route on first hit, which can take
+    // 40-60s -- well past Playwright's 30s per-test default.
+    test.setTimeout(120_000);
+
+    const email = unique('e2e.browser');
+    const token = await invite(su, email);
+    const password = 'InvitedPersonPass123!';
+
+    await page.goto(`${APP}/accept-invite?token=${token}`);
+    await page.getByLabel('Choose a password').fill(password);
+    await page.getByLabel('Confirm password').fill(password);
+
+    // The fix: a full page load here, so AuthProvider (mounted at the app
+    // root, above /login/accept-invite) re-fetches session with this
+    // brand-new account's cookie instead of continuing to serve whatever
+    // it cached before the account existed. Racing the click against
+    // waitForNavigation (rather than polling page.url() afterwards) is
+    // what makes this robust to that being a real navigation rather than
+    // a client-side route change.
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: 'load', timeout: 30_000 }),
+      page.getByRole('button', { name: 'Create my account' }).click()
+    ]);
+
+    // Reproduces the original bug's exact repro shape: login/signup, land
+    // on Welcome, then a client-side route change (clicking Continue,
+    // which calls router.push) to Integrations -- not a fresh page load,
+    // which would trivially remount everything and mask a staleness bug
+    // regardless of whether the fix is in place.
+    const continueBtn = page.getByRole('button', { name: 'Continue' });
+    if (await continueBtn.isVisible({ timeout: 5_000 }).catch(() => false)) {
+      await continueBtn.click();
+    } else {
+      await page.goto(`${APP}/integrations`, { waitUntil: 'domcontentloaded' });
+    }
+
+    // If AuthProvider were still stuck on its pre-signup ("no org")
+    // snapshot, orgId would be undefined and this org-scoped page is
+    // exactly where that shows up.
+    await expect(page.getByText('Link your Code Services')).toBeVisible({
+      timeout: 10_000
+    });
+    await expect(page.getByTestId('github-integration-card')).toBeVisible();
+
+    const session = await (await page.request.get(`${APP}/api/auth/session`)).json();
+    expect(session?.org?.id, 'the new admin should have their own workspace').toBeTruthy();
+  });
 });

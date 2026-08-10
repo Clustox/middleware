@@ -42,7 +42,7 @@ export const GithubIntegrationCard = () => {
   const { enqueueSnackbar } = useSnackbar();
 
   return (
-    <FlexBox relative>
+    <FlexBox relative data-testid="github-integration-card">
       {isGithubIntegrated && (
         <FlexBox
           title="Linked"

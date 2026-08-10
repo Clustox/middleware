@@ -31,10 +31,15 @@ const signIn = async (page: any, email: string, password: string) => {
   await page.goto(`${APP}/login`);
   await page.fill('input[type="email"]', email);
   await page.fill('input[type="password"]', password);
-  await page.click('button[type="submit"]');
-  await page.waitForURL((u: URL) => !u.pathname.startsWith('/login'), {
-    timeout: 30_000
-  });
+  // CLUSTOX: login.tsx navigates via window.location.assign on success (a
+  // real full-page load, fixing a stale-session bug -- see "bug: github
+  // link issue"), not a client-side route change. Racing the click
+  // against waitForNavigation, rather than polling page.url() afterwards,
+  // avoids an intermittent "frame was detached" from landing mid-navigation.
+  await Promise.all([
+    page.waitForNavigation({ waitUntil: 'load', timeout: 30_000 }),
+    page.click('button[type="submit"]')
+  ]);
 };
 
 test('unauthenticated visitors are redirected to login', async ({ page }) => {
