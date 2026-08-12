@@ -81,17 +81,23 @@ def make_app() -> Flask:
 
 
 def seed_repo(org_id, team_id, repo_name, idx, prs_per_repo):
+    # CLUSTOX: OrgRepo has a unique constraint on (org_name, name,
+    # provider) -- global, not scoped per org_id (a real repo slug is
+    # meant to be unique platform-wide). org_name has to be unique per
+    # target org too, or re-running this script for a second workspace
+    # collides on the first one's rows.
+    org_name = f"dummy-org-{org_id[:8]}"
     repo = OrgRepo(
         id=uuid4_str(),
         org_id=org_id,
         name=repo_name,
         provider="github",
-        org_name="dummy-org",
+        org_name=org_name,
         default_branch="main",
         language="TypeScript",
         contributors=[{"username": a} for a in AUTHORS],
         idempotency_key=f"dummy:repo:{repo_name}:{org_id}",
-        slug=f"dummy-org/{repo_name}",
+        slug=f"{org_name}/{repo_name}",
         is_active=True,
     )
     db.session.add(repo)
@@ -122,7 +128,7 @@ def seed_repo(org_id, team_id, repo_name, idx, prs_per_repo):
             id=uuid4_str(),
             repo_id=repo.id,
             title=f"Dummy PR #{num}: sample change in {repo_name}",
-            url=f"https://github.com/dummy-org/{repo_name}/pull/{num}",
+            url=f"https://github.com/{org_name}/{repo_name}/pull/{num}",
             number=str(num),
             author=random.choice(AUTHORS),
             state=PullRequestState.MERGED,
@@ -162,6 +168,13 @@ def seed_repo(org_id, team_id, repo_name, idx, prs_per_repo):
 
 
 def seed_project(org_id, team_id, key, name, tickets_per_project):
+    # CLUSTOX: Incident has a unique constraint on (provider, key), and
+    # a ticket's Incident.key is its own Ticket.key verbatim (see
+    # seed_incidents below) -- so the project key has to be unique per
+    # target org too, same reasoning as seed_repo's org_name, or
+    # re-running this script for a second workspace collides with the
+    # first one's tickets/incidents.
+    key = f"{key}{org_id[:4].upper()}"
     project = OrgProject(
         id=uuid4_str(),
         org_id=org_id,
