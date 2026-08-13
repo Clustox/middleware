@@ -11,7 +11,10 @@ from mhq.api.resources.code_resouces import (
     adapt_team_repos,
     adapt_team_repo_and_org_repo,
 )
-from mhq.api.resources.project_resources import adapt_org_projects
+from mhq.api.resources.project_resources import (
+    adapt_org_projects,
+    adapt_repo_project_mapping,
+)
 from mhq.api.resources.ticket_insights_resources import (
     adapt_ticket_insights,
     adapt_unlinked_prs,
@@ -23,6 +26,10 @@ from mhq.api.resources.sprint_resources import adapt_sprints
 from mhq.service.code.repository_service import get_repository_service
 from mhq.service.code.ticket_lead_time import get_ticket_lead_time_service
 from mhq.service.project.repository_service import get_project_service
+from mhq.service.project.repo_project_mapping import (
+    RawRepoProjectMapping,
+    get_repo_project_mapping_service,
+)
 from mhq.service.sprints import get_sprint_service
 from mhq.service.ticket_insights import get_ticket_insights_service
 from mhq.api.resources.core_resources import adapt_team
@@ -33,6 +40,7 @@ from mhq.service.core.teams import get_team_service
 from mhq.api.request_utils import (
     coerce_org_repos,
     coerce_org_projects,
+    coerce_repo_project_mappings,
     coerce_team_repos,
     dataschema,
     queryschema,
@@ -214,6 +222,45 @@ def update_team_projects(team_id: str, projects: List[RawTeamOrgProject]):
     updated_org_projects = project_service.update_team_projects(team, projects)
 
     return adapt_org_projects(updated_org_projects)
+
+
+# CLUSTOX: which single Jira project (if any) each of this team's repos
+# maps to -- see docs/JIRA_INTEGRATION_PROPOSAL.md, "Repo <-> Project
+# Mapping". Same "GET the current set / PUT the full replacement set"
+# shape as /teams/<team_id>/projects above, but returns one entry per
+# team repo (mapped or not) rather than a sparse list, since the UI
+# needs to show every repo, including unmapped ones.
+@app.route("/teams/<team_id>/repo_project_mapping", methods={"GET"})
+def fetch_team_repo_project_mapping(team_id: str):
+
+    query_validator = get_query_validator()
+    team: Team = query_validator.team_validator(team_id)
+
+    mapping_service = get_repo_project_mapping_service()
+    entries = mapping_service.get_team_repo_project_mapping(team)
+
+    return adapt_repo_project_mapping(entries)
+
+
+@app.route("/teams/<team_id>/repo_project_mapping", methods={"PUT"})
+@dataschema(
+    Schema(
+        {
+            Required("mappings"): All(list, Coerce(coerce_repo_project_mappings)),
+        }
+    ),
+)
+def update_team_repo_project_mapping(
+    team_id: str, mappings: List[RawRepoProjectMapping]
+):
+
+    query_validator = get_query_validator()
+    team: Team = query_validator.team_validator(team_id)
+
+    mapping_service = get_repo_project_mapping_service()
+    updated_entries = mapping_service.update_team_repo_project_mapping(team, mappings)
+
+    return adapt_repo_project_mapping(updated_entries)
 
 
 # CLUSTOX: Jira integration, Phase 4 (§6C/§6E) -- the DORA Metrics page's

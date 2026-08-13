@@ -32,6 +32,22 @@ class TicketMatchingRepoService:
         return {key.upper(): str(ticket_id) for ticket_id, key in tickets}
 
     @rollback_on_exc
+    def get_tickets_key_map_for_project(self, org_project_id: str) -> Dict[str, str]:
+        """
+        Same shape as get_org_tickets_key_map, scoped to one project --
+        used for a repo that has an explicit RepoProjectMapping, so its
+        PRs only ever match tickets from the project it's actually
+        mapped to, not the whole org. See
+        TicketMatchingService.match_org_prs_to_tickets.
+        """
+        tickets = (
+            self._db.session.query(Ticket.id, Ticket.key)
+            .filter(Ticket.org_project_id == org_project_id)
+            .all()
+        )
+        return {key.upper(): str(ticket_id) for ticket_id, key in tickets}
+
+    @rollback_on_exc
     def get_unmatched_prs_for_org(self, org_id: str) -> List[PullRequest]:
         """
         PRs for this org with no PullRequestTicketMapping row yet. Not

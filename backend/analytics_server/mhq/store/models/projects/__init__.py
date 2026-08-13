@@ -1,6 +1,7 @@
 from .repository import (
     OrgProject,
     ProjectIssuesBookmark,
+    RepoProjectMapping,
     TeamProjects,
 )
 from .sprints import Sprint

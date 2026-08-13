@@ -10,6 +10,7 @@ from werkzeug.exceptions import BadRequest
 from mhq.store.models.code.repository import TeamRepos
 from mhq.service.code.models.org_repo import RawTeamOrgRepo
 from mhq.service.project.models.org_project import RawTeamOrgProject
+from mhq.service.project.repo_project_mapping import RawRepoProjectMapping
 from mhq.store.models.code import WorkflowFilter, CodeProvider
 
 from mhq.service.workflows.workflow_filter import get_workflow_filter_processor
@@ -131,3 +132,22 @@ def coerce_org_project(project: Dict[str, str]) -> RawTeamOrgProject:
 
 def coerce_org_projects(projects: List[Dict[str, str]]) -> List[RawTeamOrgProject]:
     return [coerce_org_project(project) for project in projects]
+
+
+def coerce_repo_project_mapping(mapping: Dict[str, str]) -> RawRepoProjectMapping:
+
+    assert uuid_validator(mapping.get("org_repo_id"))
+    org_project_id = mapping.get("org_project_id")
+    if org_project_id is not None:
+        assert uuid_validator(org_project_id)
+
+    return RawRepoProjectMapping(
+        org_repo_id=mapping["org_repo_id"],
+        org_project_id=org_project_id,
+    )
+
+
+def coerce_repo_project_mappings(
+    mappings: List[Dict[str, str]]
+) -> List[RawRepoProjectMapping]:
+    return [coerce_repo_project_mapping(mapping) for mapping in mappings]
