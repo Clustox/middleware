@@ -3,7 +3,7 @@ jest.mock('../useTeamRepoProjectMapping', () => ({
   useTeamRepoProjectMapping: jest.fn()
 }));
 
-import { screen } from '@testing-library/react';
+import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { useAuth } from '@/hooks/useAuth';
@@ -93,7 +93,29 @@ describe('TeamRepoProjectMapping', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it('shows every repo as a row with a chip per available project, plus "No project"', () => {
+  it('shows one table row per repo, with its own project dropdown', () => {
+    (useAuth as jest.Mock).mockReturnValue({
+      integrations: { jira: { integrated: true } }
+    });
+    (useTeamRepoProjectMapping as jest.Mock).mockReturnValue({
+      ...baseConfig,
+      rows: [
+        { org_repo_id: 'repo-1', repo_name: 'payments-api', org_project_id: null },
+        {
+          org_repo_id: 'repo-2',
+          repo_name: 'payments-web',
+          org_project_id: 'project-b'
+        }
+      ]
+    });
+    render(<TeamRepoProjectMapping teamId={TEAM_ID} />);
+
+    expect(screen.getByText('payments-api')).toBeInTheDocument();
+    expect(screen.getByText('payments-web')).toBeInTheDocument();
+    expect(screen.getAllByRole('combobox')).toHaveLength(2);
+  });
+
+  it('shows "No project" as the dropdown value for an unmapped repo', () => {
     (useAuth as jest.Mock).mockReturnValue({
       integrations: { jira: { integrated: true } }
     });
@@ -105,13 +127,31 @@ describe('TeamRepoProjectMapping', () => {
     });
     render(<TeamRepoProjectMapping teamId={TEAM_ID} />);
 
-    expect(screen.getByText('payments-api')).toBeInTheDocument();
-    expect(screen.getByText('No project')).toBeInTheDocument();
-    expect(screen.getByText('PAY — Payments Core')).toBeInTheDocument();
-    expect(screen.getByText('PAYUI — Payments Frontend')).toBeInTheDocument();
+    expect(within(screen.getByRole('combobox')).getByText('No project')).toBeInTheDocument();
   });
 
-  it('calls setMapping with the project id when a project chip is clicked', async () => {
+  it('shows the connected project as the dropdown value for a mapped repo', () => {
+    (useAuth as jest.Mock).mockReturnValue({
+      integrations: { jira: { integrated: true } }
+    });
+    (useTeamRepoProjectMapping as jest.Mock).mockReturnValue({
+      ...baseConfig,
+      rows: [
+        {
+          org_repo_id: 'repo-1',
+          repo_name: 'payments-api',
+          org_project_id: 'project-a'
+        }
+      ]
+    });
+    render(<TeamRepoProjectMapping teamId={TEAM_ID} />);
+
+    expect(
+      within(screen.getByRole('combobox')).getByText('PAY — Payments Core')
+    ).toBeInTheDocument();
+  });
+
+  it('calls setMapping with the project id when an option is picked from the dropdown', async () => {
     const setMapping = jest.fn();
     (useAuth as jest.Mock).mockReturnValue({
       integrations: { jira: { integrated: true } }
@@ -125,12 +165,15 @@ describe('TeamRepoProjectMapping', () => {
     });
     render(<TeamRepoProjectMapping teamId={TEAM_ID} />);
 
-    await userEvent.click(screen.getByText('PAY — Payments Core'));
+    await userEvent.click(screen.getByRole('combobox'));
+    await userEvent.click(
+      await screen.findByRole('option', { name: 'PAY — Payments Core' })
+    );
 
     expect(setMapping).toHaveBeenCalledWith('repo-1', 'project-a');
   });
 
-  it('calls setMapping with null when "No project" is clicked on an already-mapped repo', async () => {
+  it('calls setMapping with null when "No project" is picked on an already-mapped repo', async () => {
     const setMapping = jest.fn();
     (useAuth as jest.Mock).mockReturnValue({
       integrations: { jira: { integrated: true } }
@@ -148,12 +191,13 @@ describe('TeamRepoProjectMapping', () => {
     });
     render(<TeamRepoProjectMapping teamId={TEAM_ID} />);
 
-    await userEvent.click(screen.getByText('No project'));
+    await userEvent.click(screen.getByRole('combobox'));
+    await userEvent.click(await screen.findByRole('option', { name: 'No project' }));
 
     expect(setMapping).toHaveBeenCalledWith('repo-1', null);
   });
 
-  it('shows a warning with the unmapped repo count when any repo has no project', () => {
+  it('shows a warning icon next to any repo not mapped to a project', () => {
     (useAuth as jest.Mock).mockReturnValue({
       integrations: { jira: { integrated: true } }
     });
@@ -161,34 +205,53 @@ describe('TeamRepoProjectMapping', () => {
       ...baseConfig,
       rows: [
         { org_repo_id: 'repo-1', repo_name: 'payments-api', org_project_id: null }
+      ]
+    });
+    render(<TeamRepoProjectMapping teamId={TEAM_ID} />);
+
+    expect(
+      screen.getByTitle('Not mapped to a project')
+    ).toBeInTheDocument();
+  });
+
+  it('does not show a warning icon next to a mapped repo', () => {
+    (useAuth as jest.Mock).mockReturnValue({
+      integrations: { jira: { integrated: true } }
+    });
+    (useTeamRepoProjectMapping as jest.Mock).mockReturnValue({
+      ...baseConfig,
+      rows: [
+        {
+          org_repo_id: 'repo-1',
+          repo_name: 'payments-api',
+          org_project_id: 'project-a'
+        }
+      ]
+    });
+    render(<TeamRepoProjectMapping teamId={TEAM_ID} />);
+
+    expect(screen.queryByTitle('Not mapped to a project')).not.toBeInTheDocument();
+  });
+
+  it('shows the connected-count summary in the section header', () => {
+    (useAuth as jest.Mock).mockReturnValue({
+      integrations: { jira: { integrated: true } }
+    });
+    (useTeamRepoProjectMapping as jest.Mock).mockReturnValue({
+      ...baseConfig,
+      rows: [
+        {
+          org_repo_id: 'repo-1',
+          repo_name: 'payments-api',
+          org_project_id: 'project-a'
+        },
+        { org_repo_id: 'repo-2', repo_name: 'payments-web', org_project_id: null }
       ],
       unmappedCount: 1
     });
     render(<TeamRepoProjectMapping teamId={TEAM_ID} />);
 
-    expect(
-      screen.getByText('1 repo not mapped to a project yet')
-    ).toBeInTheDocument();
-  });
-
-  it('does not show the unmapped warning when every repo is mapped', () => {
-    (useAuth as jest.Mock).mockReturnValue({
-      integrations: { jira: { integrated: true } }
-    });
-    (useTeamRepoProjectMapping as jest.Mock).mockReturnValue({
-      ...baseConfig,
-      rows: [
-        {
-          org_repo_id: 'repo-1',
-          repo_name: 'payments-api',
-          org_project_id: 'project-a'
-        }
-      ],
-      unmappedCount: 0
-    });
-    render(<TeamRepoProjectMapping teamId={TEAM_ID} />);
-
-    expect(screen.queryByText(/not mapped to a project/)).not.toBeInTheDocument();
+    expect(screen.getByText('1 of 2 repos connected to a project')).toBeInTheDocument();
   });
 
   it('prompts to select a Jira project first when the team has none', () => {
