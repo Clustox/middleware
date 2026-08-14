@@ -1,5 +1,6 @@
 from typing import Dict, List
 
+from mhq.service.project.repo_project_mapping import RepoProjectMappingEntry
 from mhq.store.models.projects import OrgProject
 
 
@@ -19,3 +20,17 @@ def adapt_org_project(org_project: OrgProject) -> Dict[str, any]:
 
 def adapt_org_projects(org_projects: List[OrgProject]) -> List[Dict[str, any]]:
     return [adapt_org_project(project) for project in org_projects]
+
+
+def adapt_repo_project_mapping_entry(entry: RepoProjectMappingEntry) -> Dict[str, any]:
+    return {
+        "org_repo_id": entry.org_repo_id,
+        "repo_name": entry.repo_name,
+        "org_project_id": entry.org_project_id,
+    }
+
+
+def adapt_repo_project_mapping(
+    entries: List[RepoProjectMappingEntry]
+) -> List[Dict[str, any]]:
+    return [adapt_repo_project_mapping_entry(entry) for entry in entries]

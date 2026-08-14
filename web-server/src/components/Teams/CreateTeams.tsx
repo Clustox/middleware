@@ -42,6 +42,7 @@ import { trimWithEllipsis } from '@/utils/stringFormatting';
 
 import { BatchImportModal } from './BatchImportModal';
 import { TeamJiraProjects } from './TeamJiraProjects';
+import { TeamRepoProjectMapping } from './TeamRepoProjectMapping';
 
 import AnimatedInputWrapper from '../AnimatedInputWrapper/AnimatedInputWrapper';
 import { FlexBox } from '../FlexBox';
@@ -108,6 +109,20 @@ const TeamsCRUD: FC<CRUDProps> = ({ onSave, onDiscard, teamId }) => {
                     title="Jira integration"
                   >
                     <TeamJiraProjects teamId={teamId} />
+                  </DataSourceSection>
+                  {/* CLUSTOX: a third, still-independent section -- see
+                      docs/JIRA_INTEGRATION_PROPOSAL.md, "Repo <-> Project
+                      Mapping". Renders nothing of its own accord until
+                      this team has both repos and Jira projects saved
+                      (TeamRepoProjectMapping's own gating), so it never
+                      appears as an empty, confusing section for a team
+                      still mid-setup. */}
+                  <Divider />
+                  <DataSourceSection
+                    icon={<JiraIcon height={20} width={20} />}
+                    title="Repo → Project Mapping"
+                  >
+                    <TeamRepoProjectMapping teamId={teamId} />
                   </DataSourceSection>
                 </>
               )}

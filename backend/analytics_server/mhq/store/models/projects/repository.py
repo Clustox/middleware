@@ -50,6 +50,42 @@ class TeamProjects(db.Model):
     )
 
 
+class RepoProjectMapping(db.Model):
+    """
+    Which single Jira project (if any) a repo's tickets should be
+    matched against for PR<->ticket matching -- see
+    docs/JIRA_INTEGRATION_PROPOSAL.md. Deliberately NOT
+    TeamProjects/TeamRepos's join-table shape: org_repo_id is the sole
+    primary key, not composite with org_project_id, because a repo maps
+    to at most one project by design (an org's Jira setup is assumed to
+    have one project's tickets live in one codebase, not scattered
+    across several) -- a project can still have many repos.
+
+    No is_active column, unlike this file's other two tables: nothing
+    else references this table's rows by FK, and a stale "used to map
+    to X" row serves no purpose once a repo is remapped or unmapped, so
+    this is a real delete (see RepoProjectMappingRepoService.unset_mapping)
+    rather than a soft one.
+
+    Mapping is entirely optional. An unmapped repo keeps today's
+    org-wide ticket-matching behavior unchanged -- see
+    TicketMatchingService.match_org_prs_to_tickets.
+    """
+
+    __tablename__ = "RepoProjectMapping"
+
+    org_repo_id = db.Column(
+        UUID(as_uuid=True), db.ForeignKey("OrgRepo.id"), primary_key=True
+    )
+    org_project_id = db.Column(
+        UUID(as_uuid=True), db.ForeignKey("OrgProject.id"), nullable=False
+    )
+    created_at = db.Column(db.DateTime(timezone=True), server_default=func.now())
+    updated_at = db.Column(
+        db.DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class ProjectIssuesBookmark(db.Model):
     """
     Incremental-sync watermark for a project's issue sync, one per
