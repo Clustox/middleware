@@ -22,9 +22,21 @@ echo 'MHQ_STARTING SUPERVISOR'
 
 if [ -f "/app/backend/analytics_server/mhq/config/config.ini" ]; then
   echo "config.ini found. Setting environment variables from config.ini..."
+    # CLUSTOX: `export`, not an un-exported `KEY=value` appended to ~/.bashrc.
+    # The old line wrote plain assignments, so `source ~/.bashrc` set shell
+    # variables that died in this script -- supervisord and every child
+    # (including the Next.js server) never saw SECRET_PUBLIC_KEY, and linking
+    # any integration failed with a 400 ("first argument must be ... Received
+    # undefined" from Buffer.from(undefined)).
+    #
+    # The bug only bites from the SECOND boot onward: the first boot takes the
+    # else-branch below, whose generate script writes `export` lines. That is
+    # why integrations linked fine on a fresh install and broke after any
+    # container recreate -- config.ini persists in the keys volume, so every
+    # redeploy lands here.
     while IFS='=' read -r key value; do
         if [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ && ! -z "$value" ]]; then
-            echo "$key"="$value" >> ~/.bashrc
+            export "$key"="$value"
         fi
     done < "../backend/analytics_server/mhq/config/config.ini"
 else
