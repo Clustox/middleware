@@ -321,7 +321,14 @@ const updateReposWorkflows = async (
       .whereIn('name', reposForWorkflows)
       .where('org_id', org_id)
       .andWhere('is_active', true)
-      .and.whereIn('provider', [Integration.GITHUB, Integration.GITLAB]);
+      // CLUSTOX: Bitbucket included -- without it, groupedRepos never holds a
+      // bitbucket repo, the filter below drops its workflows, and a Pipelines
+      // selection from the picker silently vanishes on save.
+      .and.whereIn('provider', [
+        Integration.GITHUB,
+        Integration.GITLAB,
+        Integration.BITBUCKET
+      ]);
 
     const groupedRepos = groupBy(dbReposForWorkflows, 'name');
 
@@ -340,11 +347,20 @@ const updateReposWorkflows = async (
         workflows.map((workflow) => ({
           is_active: true,
           name: workflow.name,
+          // CLUSTOX: the DB column holds RepoWorkflowProviders NAMES, which
+          // the CIProvider values mirror. A Bitbucket repo can carry either
+          // provider: the synthetic Pipelines entry (whose value is the
+          // repo's own "workspace/slug" -- the contract the backend test
+          // pins) or upstream's legacy CircleCI-for-Bitbucket path. The
+          // value is the discriminator; the UI only sends {name, value}.
           provider:
             workflow.provider === Integration.GITHUB
               ? CIProvider.GITHUB_ACTIONS
               : workflow.provider === Integration.BITBUCKET
-              ? CIProvider.CIRCLE_CI
+              ? String(workflow.value) ===
+                `${groupedRepos[repoName]?.org_name}/${groupedRepos[repoName]?.slug}`
+                ? CIProvider.BITBUCKET_PIPELINES
+                : CIProvider.CIRCLE_CI
               : null,
           provider_workflow_id: String(workflow.value),
           type: WorkflowType.DEPLOYMENT,
