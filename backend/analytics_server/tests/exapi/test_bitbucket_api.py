@@ -215,3 +215,78 @@ def test_check_pat_raises_rate_limit_instead_of_reading_as_invalid():
 
     with pytest.raises(BitbucketRateLimitExceeded):
         service.check_pat()
+
+
+BB_PIPELINE = {
+    "uuid": "{d4e5f6a7-0000-4000-8000-000000000004}",
+    "build_number": 412,
+    "state": {"name": "COMPLETED", "result": {"name": "SUCCESSFUL"}},
+    "target": {"ref_type": "branch", "ref_name": "main"},
+    "creator": {
+        "uuid": "{a1b2c3d4-0000-4000-8000-000000000001}",
+        "nickname": "hamadr",
+    },
+    "trigger": {"name": "PUSH"},
+    "created_on": "2026-08-20T10:00:00+00:00",
+    "completed_on": "2026-08-20T10:07:30+00:00",
+    "duration_in_seconds": 450,
+    "links": {
+        "html": {"href": "https://bitbucket.org/ws/repo/pipelines/results/412"}
+    },
+}
+
+
+def test_pipelines_stop_paginating_before_the_bookmark():
+    # CLUSTOX: the Pipelines API has no server-side date filter, only
+    # sort=-created_on. Without stopping at the first page whose oldest run
+    # predates the bookmark, every sync walks the repo's ENTIRE pipeline
+    # history -- against a ~1,000 req/hr ceiling.
+    page_one = {
+        "values": [
+            dict(BB_PIPELINE, build_number=412, created_on="2026-08-20T10:00:00+00:00"),
+            dict(BB_PIPELINE, build_number=411, created_on="2026-08-01T10:00:00+00:00"),
+        ],
+        "next": "https://api.bitbucket.org/2.0/repositories/ws/repo/pipelines/?page=2",
+    }
+    page_two = {
+        "values": [
+            dict(BB_PIPELINE, build_number=410, created_on="2026-07-01T10:00:00+00:00")
+        ]
+    }
+    service = _service_with_pages([page_one, page_two])
+
+    runs = service.get_repo_pipelines(
+        "ws", "repo", datetime(2026, 8, 10, tzinfo=timezone.utc)
+    )
+
+    # Page one's oldest run (Aug 1) predates the bookmark (Aug 10), so page
+    # two must never be requested.
+    assert service._session.get.call_count == 1
+    assert [r["build_number"] for r in runs] == [412]
+
+
+def test_pipelines_filter_client_side_within_a_page():
+    page = {
+        "values": [
+            dict(BB_PIPELINE, build_number=412, created_on="2026-08-20T10:00:00+00:00"),
+            dict(BB_PIPELINE, build_number=411, created_on="2026-08-01T10:00:00+00:00"),
+        ]
+    }
+    service = _service_with_pages([page])
+
+    runs = service.get_repo_pipelines(
+        "ws", "repo", datetime(2026, 8, 10, tzinfo=timezone.utc)
+    )
+
+    assert [r["build_number"] for r in runs] == [412]
+
+
+def test_pipelines_request_newest_first():
+    service = _service_with_pages([{"values": []}])
+
+    service.get_repo_pipelines(
+        "ws", "repo", datetime(2026, 8, 10, tzinfo=timezone.utc)
+    )
+
+    params = service._session.get.call_args_list[0].kwargs["params"]
+    assert params.get("sort") == "-created_on"
