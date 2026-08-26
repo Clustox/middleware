@@ -9,9 +9,15 @@ from mhq.store.repos.core import CoreRepoService
 # workspace gets "No workflow integrations found" and returns early, and a mixed
 # workspace has its Jenkins rows filtered out of
 # get_active_repo_workflows_by_repo_ids_and_providers.
+# CLUSTOX: every workflow provider must be listed here as well as in
+# WorkflowETLFactory -- this bucket decides which orgs the scheduler syncs
+# workflows for at all. A provider in the factory but not here maps fine in
+# the UI and then never syncs. (Third occurrence of this gap class; see the
+# CODE_INTEGRATION_BUCKET note.)
 WORKFLOW_INTEGRATION_BUCKET = [
     RepoWorkflowProviders.GITHUB_ACTIONS.value,
     RepoWorkflowProviders.JENKINS.value,
+    RepoWorkflowProviders.BITBUCKET_PIPELINES.value,
 ]
 
 
