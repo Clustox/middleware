@@ -116,7 +116,7 @@ GET /2.0/repositories/{ws}/{slug}/pipelines/?sort=-created_on
 |---|---|---|
 | deployment | completed pipeline on the repo's production branch | Same definition Jenkins uses |
 | `conducted_at` | `completed_on` | |
-| `status` SUCCESS / FAILURE | `state.result.name` SUCCESSFUL / FAILED / STOPPED | STOPPED → FAILURE; anything unrecognised skips that run with a warning, never the batch |
+| `status` | `state.result.name` SUCCESSFUL / FAILED / ERROR / STOPPED | STOPPED → CANCELLED — an abort, not a failed ship, matching Jenkins' ABORTED; counting it as FAILURE would inflate CFR. Unrecognised results map to FAILURE rather than being guessed as a ship. |
 | `event_actor` | `creator.nickname` (fallback `trigger` account) | Contributor filter works on day one |
 | run URL | `links.html.href` or built from build_number | Deep link from the deployments drill-down |
 

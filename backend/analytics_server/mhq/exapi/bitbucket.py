@@ -114,6 +114,39 @@ class BitbucketApiService:
         )
         return self._get_paginated(url)
 
+    def get_repo_pipelines(
+        self, workspace: str, repo_slug: str, updated_since: datetime
+    ) -> List[Dict]:
+        """CLUSTOX: the Pipelines API has no server-side date filter, only
+        sort. Newest-first plus stopping at the first page whose oldest run
+        predates the bookmark bounds the walk -- without the early stop every
+        sync pages through the repo's entire pipeline history against a
+        ~1,000 req/hr ceiling."""
+        url = f"{self.base_url}/repositories/{workspace}/{repo_slug}/pipelines/"
+        request_params = {"sort": "-created_on", "pagelen": PAGE_SIZE}
+        runs: List[Dict] = []
+
+        while url:
+            response = self._session.get(url, params=request_params)
+            self._handle_error(response)
+            body = response.json()
+            page = body.get("values") or []
+
+            page_exhausted = False
+            for run in page:
+                created_on = run.get("created_on")
+                if created_on and _iso_before(created_on, updated_since):
+                    page_exhausted = True
+                    continue
+                runs.append(run)
+
+            if page_exhausted:
+                break
+            url = body.get("next")
+            request_params = None
+
+        return runs
+
     def get_pr_commits(self, workspace: str, repo_slug: str, pr_id: int) -> List[Dict]:
         url = (
             f"{self.base_url}/repositories/{workspace}/{repo_slug}"
@@ -127,3 +160,12 @@ class BitbucketApiService:
             f"/pullrequests/{pr_id}/diffstat"
         )
         return self._get_paginated(url)
+
+
+def _iso_before(iso_string: str, threshold: datetime) -> bool:
+    try:
+        return datetime.fromisoformat(iso_string) < threshold
+    except ValueError:
+        # An unparseable timestamp neither stops pagination nor gets the run
+        # silently dropped here -- the handler owns per-run skipping.
+        return False
