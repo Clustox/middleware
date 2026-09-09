@@ -199,12 +199,23 @@ export const BatchImportModal: FC<BatchImportModalProps> = ({
           >
             <MenuItem value={Integration.GITHUB}>GitHub</MenuItem>
             <MenuItem value={Integration.GITLAB}>GitLab</MenuItem>
+            <MenuItem value={Integration.BITBUCKET}>Bitbucket</MenuItem>
           </Select>
         </FormControl>
 
+        {/* CLUSTOX: for Bitbucket this is the workspace slug. Free-text on
+            purpose -- scoped Atlassian tokens cannot enumerate workspaces
+            (410/404, found live in phase 1), so a dropdown is impossible;
+            the user types the slug and git_org_repos lists that workspace.
+            The backend branch has handled Bitbucket since phase 1 -- only
+            this modal's provider list was missing the option. */}
         <TextField
-          label="Organization"
-          placeholder="e.g. my-org"
+          label={
+            provider === Integration.BITBUCKET ? 'Workspace' : 'Organization'
+          }
+          placeholder={
+            provider === Integration.BITBUCKET ? 'e.g. clustox' : 'e.g. my-org'
+          }
           value={orgName}
           onChange={(e) => setOrgName(e.target.value)}
           fullWidth
