@@ -2,7 +2,7 @@ from typing import Dict, List
 
 from mhq.service.project.models.org_project import RawTeamOrgProject
 from mhq.store.models.core import Team
-from mhq.store.models.projects import OrgProject
+from mhq.store.models.projects import OrgProject, OrgProjectConnection
 from mhq.store.repos.projects import ProjectRepoService, TeamProjects
 from mhq.utils.string import uuid4_str
 
@@ -59,6 +59,14 @@ class ProjectService:
         }
 
         updated_org_projects = []
+        # CLUSTOX: which connection each project (new or existing) came from,
+        # keyed by the project's own id -- collected alongside the loop below
+        # since that's the only place both the project id (freshly minted for
+        # a new row) and the raw request's connection_id are in scope
+        # together. Written only after updated_org_projects is committed
+        # (see the OrgProjectConnection FK), so this stays a plan, not a
+        # write, until after the return below.
+        connection_id_by_project_id: Dict[str, str] = {}
         for raw_project in raw_org_projects:
             existing_project = idempotency_key_to_project_map.get(
                 raw_project.idempotency_key
@@ -75,27 +83,44 @@ class ProjectService:
                 existing_project.is_active = True
                 existing_project.key = raw_project.key
                 existing_project.name = raw_project.name
-                updated_org_projects.append(existing_project)
+                project = existing_project
             else:
-                updated_org_projects.append(
-                    OrgProject(
-                        id=uuid4_str(),
-                        org_id=org_id,
-                        key=raw_project.key,
-                        name=raw_project.name,
-                        provider=raw_project.provider,
-                        idempotency_key=raw_project.idempotency_key,
-                        # Explicit rather than relying on the column's
-                        # SQLAlchemy-level default -- that default only
-                        # materializes on this instance once it's actually
-                        # flushed through a real DB session, which makes
-                        # the object momentarily wrong (is_active=None) to
-                        # anything inspecting it beforehand.
-                        is_active=True,
-                    )
+                project = OrgProject(
+                    id=uuid4_str(),
+                    org_id=org_id,
+                    key=raw_project.key,
+                    name=raw_project.name,
+                    provider=raw_project.provider,
+                    idempotency_key=raw_project.idempotency_key,
+                    # Explicit rather than relying on the column's
+                    # SQLAlchemy-level default -- that default only
+                    # materializes on this instance once it's actually
+                    # flushed through a real DB session, which makes
+                    # the object momentarily wrong (is_active=None) to
+                    # anything inspecting it beforehand.
+                    is_active=True,
                 )
+            updated_org_projects.append(project)
+            # A project saved without a connection_id (legacy flow, or a
+            # non-Jira provider) is left alone here -- not de-associated --
+            # see save_org_project_connections's own docstring.
+            if raw_project.connection_id:
+                connection_id_by_project_id[str(project.id)] = raw_project.connection_id
 
-        return self._project_repo_service.update_org_projects(updated_org_projects)
+        saved_projects = self._project_repo_service.update_org_projects(
+            updated_org_projects
+        )
+        if connection_id_by_project_id:
+            self._project_repo_service.save_org_project_connections(
+                [
+                    OrgProjectConnection(
+                        org_project_id=project_id,
+                        jira_connection_id=connection_id,
+                    )
+                    for project_id, connection_id in connection_id_by_project_id.items()
+                ]
+            )
+        return saved_projects
 
     def _update_team_projects(
         self,

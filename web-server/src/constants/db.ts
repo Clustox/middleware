@@ -44,7 +44,11 @@ enum TableT {
   ClustoxUserAuth,
   ClustoxUserTeamAccess,
   ClustoxSyncRun,
-  ClustoxInvite
+  ClustoxInvite,
+  // CLUSTOX: Jira multi-account support -- see
+  // docs/JIRA_MULTI_ACCOUNT_PLAN.md.
+  JiraConnection,
+  OrgProjectConnection
 }
 
 export const Table = objectEnum(TableT);
@@ -632,6 +636,35 @@ export const Columns = {
       accepted_by,
       revoked_at,
       emailed_at
+    }
+    return Columns;
+  }),
+  // CLUSTOX: Jira multi-account support -- see
+  // docs/JIRA_MULTI_ACCOUNT_PLAN.md. Mirrors JiraConnection/
+  // OrgProjectConnection's actual columns (see the migration and the
+  // SQLAlchemy models on the Python side) -- read-only from this side
+  // today (jira_project_search.ts), writes still go through the Flask
+  // routes from Task 3.
+  [Table.JiraConnection]: objectEnumFromFn(() => {
+    enum Columns {
+      id,
+      org_id,
+      site_url,
+      email,
+      access_token_enc_chunks,
+      provider_meta,
+      is_default,
+      generated_by,
+      created_at,
+      updated_at
+    }
+    return Columns;
+  }),
+  [Table.OrgProjectConnection]: objectEnumFromFn(() => {
+    enum Columns {
+      org_project_id,
+      jira_connection_id,
+      created_at
     }
     return Columns;
   })

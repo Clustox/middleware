@@ -111,6 +111,20 @@ export const DoraMetricsBody = () => {
   // stacked inside the other. See TicketCycleTimeCard.tsx's own note.
   const ticketInsights = useTicketInsights();
 
+  // CLUSTOX: isTeamInsightsEmpty (above) only ever looks at Git-based
+  // stats -- a repo-less, Jira-only team (see
+  // docs/JIRA_MULTI_ACCOUNT_PLAN.md's Test Scenario 4: a Jira project
+  // with no repo at all) has none of those by construction, and used to
+  // fall into the "configure team repos" empty state below even with
+  // real ticket-cycle-time data ready to show. Not shown while
+  // ticketInsights is still loading, or a team whose Jira fetch hasn't
+  // resolved yet would flash this empty state before its own data
+  // arrives.
+  const showEmptyState =
+    isTeamInsightsEmpty &&
+    !ticketInsights.isLoading &&
+    !ticketInsights.insights?.cycle_time_by_project?.length;
+
   if (isErrored)
     return (
       <SomethingWentWrong
@@ -119,7 +133,7 @@ export const DoraMetricsBody = () => {
       />
     );
   if (!firstLoadDone) return <MiniLoader label={getRandomLoadMsg()} />;
-  if (isTeamInsightsEmpty)
+  if (showEmptyState)
     if (isSyncing) return <DataStillSyncing />;
     else
       return (

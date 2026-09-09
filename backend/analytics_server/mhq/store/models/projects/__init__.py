@@ -1,5 +1,6 @@
 from .repository import (
     OrgProject,
+    OrgProjectConnection,
     ProjectIssuesBookmark,
     TeamProjects,
 )

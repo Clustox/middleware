@@ -17,6 +17,11 @@ const mockRes = () => {
   const res: any = {};
   res.status = jest.fn(() => res);
   res.send = jest.fn(() => res);
+  // CLUSTOX: the real res is an untouched http.ServerResponse (EventEmitter),
+  // and the handler listens for 'close' to abort the outbound Jira call if
+  // the client disconnects mid-search -- see jira_project_search.ts's own
+  // comment. This plain mock needs at least a no-op .on to match that shape.
+  res.on = jest.fn();
   return res;
 };
 
@@ -150,6 +155,44 @@ describe('GET /api/internal/[org_id]/jira_project_search', () => {
     }
   );
 
+  it('aborts the outbound Jira call when the client disconnects mid-search', async () => {
+    // Regression test for the pile-up bug: search-as-you-type fires a new
+    // request on every keystroke, and without this, a superseded request's
+    // outbound Jira call keeps running to completion (or its own 8s
+    // timeout) regardless of the client having already moved on.
+    mockDbChain({
+      provider_meta: { site_url: 'mycompany.atlassian.net', email: 'a@b.com' },
+      access_token_enc_chunks: ['enc1']
+    });
+    (dec as jest.Mock).mockReturnValue('decrypted-token');
+    let resolveAxios: (value: unknown) => void;
+    (axios.get as jest.Mock).mockReturnValue(
+      new Promise((resolve) => {
+        resolveAxios = resolve;
+      })
+    );
+    const res = mockRes();
+
+    const handlerPromise = searchHandler(mockReq(), res);
+    // Let the handler run up to (and register) res.on('close', ...) before
+    // simulating the disconnect -- several awaited steps (schema
+    // validation, the DB lookup) sit before that line, so a single
+    // microtask tick isn't enough; a macrotask (setTimeout) flushes all
+    // of them. jsdom has no setImmediate.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const [, onClose] = (res.on as jest.Mock).mock.calls[0];
+    const [, axiosConfig] = (axios.get as jest.Mock).mock.calls[0];
+    expect(axiosConfig.signal.aborted).toBe(false);
+
+    onClose();
+
+    expect(axiosConfig.signal.aborted).toBe(true);
+
+    resolveAxios!({ data: { values: [] } });
+    await handlerPromise;
+  });
+
   it('reports 502 when Jira is unreachable', async () => {
     mockDbChain({
       provider_meta: { site_url: 'mycompany.atlassian.net', email: 'a@b.com' },
@@ -162,5 +205,83 @@ describe('GET /api/internal/[org_id]/jira_project_search', () => {
     await searchHandler(mockReq(), res);
 
     expect(res.status).toHaveBeenCalledWith(502);
+  });
+});
+
+// CLUSTOX: Jira multi-account support. See
+// docs/JIRA_MULTI_ACCOUNT_PLAN.md Task 6 part 2.
+describe('GET /api/internal/[org_id]/jira_project_search with connection_id', () => {
+  const CONNECTION_ID = '22222222-2222-4222-8222-222222222222';
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    asAuthed();
+  });
+
+  it('searches the given connection’s Jira site, not the legacy Integration row', async () => {
+    const chain = mockDbChain({
+      site_url: 'other.atlassian.net',
+      email: 'b@other.com',
+      access_token_enc_chunks: ['enc2']
+    });
+    (dec as jest.Mock).mockReturnValue('other-decrypted-token');
+    (axios.get as jest.Mock).mockResolvedValue({
+      data: { values: [{ id: '5001', key: 'TEST', name: 'Test Project' }] }
+    });
+    const res = mockRes();
+
+    await searchHandler(
+      mockReq({ connection_id: CONNECTION_ID, search_text: 'test' }),
+      res
+    );
+
+    expect(db).toHaveBeenCalledWith('JiraConnection');
+    expect(chain.where).toHaveBeenCalledWith({
+      org_id: ORG_ID,
+      id: CONNECTION_ID
+    });
+    expect(axios.get).toHaveBeenCalledWith(
+      'https://other.atlassian.net/rest/api/3/project/search',
+      expect.objectContaining({
+        auth: { username: 'b@other.com', password: 'other-decrypted-token' }
+      })
+    );
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.send).toHaveBeenCalledWith([
+      {
+        id: '5001',
+        key: 'TEST',
+        name: 'Test Project',
+        // Scoped by connection_id too, not just org_id -- a second
+        // connection with a colliding site-local project id must not
+        // collide with this one.
+        idempotency_key: `jira:${ORG_ID}:${CONNECTION_ID}:5001`,
+        provider: 'jira',
+        connection_id: CONNECTION_ID
+      }
+    ]);
+  });
+
+  it('reports 404 without ever calling Jira when the connection does not resolve', async () => {
+    mockDbChain(undefined);
+    const res = mockRes();
+
+    await searchHandler(mockReq({ connection_id: CONNECTION_ID }), res);
+
+    expect(res.status).toHaveBeenCalledWith(404);
+    expect(axios.get).not.toHaveBeenCalled();
+  });
+
+  it('never falls back to the legacy Integration row for a connection that fails to resolve', async () => {
+    // A missing/foreign connection_id must not silently search whatever
+    // the legacy Integration row happens to point at -- that would search
+    // (or worse, appear to succeed against) the wrong Jira site entirely.
+    mockDbChain(undefined);
+    const res = mockRes();
+
+    await searchHandler(mockReq({ connection_id: CONNECTION_ID }), res);
+
+    expect(db).toHaveBeenCalledWith('JiraConnection');
+    expect(db).not.toHaveBeenCalledWith('Integration');
   });
 });

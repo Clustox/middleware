@@ -7,9 +7,12 @@
 from typing import Dict, List, Tuple
 from flask import Blueprint, jsonify
 from github import GithubException
+from sqlalchemy.exc import IntegrityError
 
-# CLUSTOX: Required is used by the Jenkins mapping request schemas below.
-from voluptuous import Schema, Optional, Required, Coerce, Range, All
+# CLUSTOX: Required is used by the Jenkins mapping request schemas below. Any
+# is used by the JiraConnection routes' generated_by field, which is either a
+# uuid string or None.
+from voluptuous import Schema, Optional, Required, Coerce, Range, All, Any
 
 from mhq.exapi.models.gitlab import GitlabRepo
 
@@ -25,6 +28,13 @@ from mhq.store.models.code.enums import TeamReposDeploymentType
 from mhq.store.models.code.workflows.workflows import RepoWorkflow
 from mhq.store.repos.code import CodeRepoService
 from mhq.store.repos.workflows import WorkflowRepoService
+
+# CLUSTOX: JiraConnection routes -- see docs/JIRA_MULTI_ACCOUNT_PLAN.md Task 3.
+from mhq.store.repos.jira_connection import (
+    JiraConnectionInUseError,
+    JiraConnectionNotFoundError,
+    JiraConnectionRepoService,
+)
 
 # END CLUSTOX
 from mhq.utils.github import github_org_data_multi_thread_worker
@@ -652,3 +662,118 @@ def get_gitlab_user_projects(org_id: str, page_size: int, page: int):
         }
         for project in projects
     ]
+
+
+# CLUSTOX: JiraConnection routes -- Task 3 of docs/JIRA_MULTI_ACCOUNT_PLAN.md.
+# The web-server's jira-connections/* BFF routes proxy straight through to
+# these, the same way the Jenkins mapping routes above do, rather than writing
+# JiraConnection/OrgProjectConnection from knex directly: create/delete/
+# set-default all carry business rules (encrypt-on-write, delete-blocked-by-
+# reference, default-switch atomicity) that belong in one place, enforced
+# for every caller, not re-implemented in TypeScript.
+def _serialize_jira_connection(connection) -> Dict:
+    # access_token_enc_chunks is deliberately never included -- there is no
+    # caller of this serializer that should ever see even the encrypted form.
+    return {
+        "id": str(connection.id),
+        "site_url": connection.site_url,
+        "email": connection.email,
+        "is_default": connection.is_default,
+        "provider_meta": connection.provider_meta or {},
+        "created_at": (
+            connection.created_at.isoformat() if connection.created_at else None
+        ),
+    }
+
+
+@app.route("/orgs/<org_id>/integrations/jira-connections", methods={"GET"})
+def list_jira_connections(org_id: str):
+    query_validator = get_query_validator()
+    query_validator.org_validator(org_id)
+
+    service = JiraConnectionRepoService()
+    connections = service.list_jira_connections(org_id)
+    return jsonify([_serialize_jira_connection(c) for c in connections])
+
+
+@app.route("/orgs/<org_id>/integrations/jira-connections", methods={"POST"})
+@dataschema(
+    Schema(
+        {
+            Required("site_url"): str,
+            Required("email"): str,
+            Required("access_token"): str,
+            Optional("provider_meta", default={}): dict,
+            Optional("generated_by", default=None): Any(
+                All(str, Coerce(uuid_validator)), None
+            ),
+        }
+    ),
+)
+def create_jira_connection(
+    org_id: str,
+    site_url: str,
+    email: str,
+    access_token: str,
+    provider_meta: dict,
+    generated_by: str = None,
+):
+    query_validator = get_query_validator()
+    query_validator.org_validator(org_id)
+
+    service = JiraConnectionRepoService()
+    try:
+        connection = service.create_jira_connection(
+            org_id, site_url, email, access_token, provider_meta, generated_by
+        )
+    except IntegrityError:
+        # jira_connection_unique_account: this (org_id, site_url, email) is
+        # already connected. Named explicitly rather than surfacing the raw
+        # constraint violation -- see delete/set-default below for the same
+        # rule applied to their own DB-level invariants.
+        return (
+            jsonify(
+                {
+                    "error": (
+                        f"{email} is already connected to {site_url} for this "
+                        "workspace"
+                    )
+                }
+            ),
+            409,
+        )
+    return jsonify(_serialize_jira_connection(connection)), 201
+
+
+@app.route(
+    "/orgs/<org_id>/integrations/jira-connections/<connection_id>",
+    methods={"DELETE"},
+)
+def delete_jira_connection(org_id: str, connection_id: str):
+    query_validator = get_query_validator()
+    query_validator.org_validator(org_id)
+
+    service = JiraConnectionRepoService()
+    try:
+        service.delete_jira_connection(org_id, connection_id)
+    except JiraConnectionNotFoundError as e:
+        return jsonify({"error": str(e)}), 404
+    except JiraConnectionInUseError as e:
+        return jsonify({"error": str(e)}), 409
+    return jsonify({"ok": True})
+
+
+@app.route(
+    "/orgs/<org_id>/integrations/jira-connections/<connection_id>",
+    methods={"PATCH"},
+)
+def set_default_jira_connection(org_id: str, connection_id: str):
+    query_validator = get_query_validator()
+    query_validator.org_validator(org_id)
+
+    service = JiraConnectionRepoService()
+    try:
+        service.set_default_jira_connection(org_id, connection_id)
+    except JiraConnectionNotFoundError as e:
+        return jsonify({"error": str(e)}), 404
+    return jsonify({"ok": True})

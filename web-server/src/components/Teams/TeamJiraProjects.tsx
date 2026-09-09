@@ -5,6 +5,7 @@ import {
   Card,
   CircularProgress,
   IconButton,
+  MenuItem,
   Table,
   TableBody,
   TableCell,
@@ -50,7 +51,10 @@ const TeamJiraProjectsBody: FC<{ teamId: ID }> = ({ teamId }) => {
     isSearching,
     isLoading,
     isSaving,
-    onSave
+    onSave,
+    connections,
+    selectedConnectionId,
+    setSelectedConnectionId
   } = useTeamJiraProjectsConfig(teamId);
   const theme = useTheme();
 
@@ -71,6 +75,30 @@ const TeamJiraProjectsBody: FC<{ teamId: ID }> = ({ teamId }) => {
         </Line>
         <Line>Select the Jira project(s) this team works out of</Line>
       </FlexBox>
+
+      {/* CLUSTOX: Jira multi-account support -- pick a connection before
+          picking its projects. Hidden when there's nothing to pick from
+          (no connections added yet), which leaves the legacy single-account
+          flow's UI completely unchanged for every org that hasn't touched
+          this feature. See docs/JIRA_MULTI_ACCOUNT_PLAN.md Task 6 part 2. */}
+      {connections.length > 0 && (
+        <TextField
+          select
+          size="small"
+          label="Search projects from"
+          sx={{ width: '320px', minWidth: '260px' }}
+          value={selectedConnectionId}
+          onChange={(e) => setSelectedConnectionId(e.target.value)}
+        >
+          <MenuItem value="">Legacy Jira account</MenuItem>
+          {connections.map((connection) => (
+            <MenuItem key={connection.id} value={connection.id}>
+              {connection.site_url} ({connection.email})
+              {connection.is_default ? ' — default' : ''}
+            </MenuItem>
+          ))}
+        </TextField>
+      )}
 
       <FlexBox alignItems="center" gap={2}>
         <Autocomplete

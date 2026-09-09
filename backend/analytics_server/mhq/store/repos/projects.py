@@ -7,6 +7,7 @@ from mhq.store import db, rollback_on_exc
 from mhq.store.models.core import Team
 from mhq.store.models.projects import (
     OrgProject,
+    OrgProjectConnection,
     ProjectIssuesBookmark,
     Sprint,
     TeamProjects,
@@ -58,6 +59,23 @@ class ProjectRepoService:
         [self._db.session.merge(org_project) for org_project in org_projects]
         self._db.session.commit()
         return self.get_projects_by_ids([str(project.id) for project in org_projects])
+
+    @rollback_on_exc
+    def save_org_project_connections(
+        self, connections: List[OrgProjectConnection]
+    ) -> None:
+        """
+        Upserts which JiraConnection each given OrgProject came from. Called
+        only for projects picked under a connection (see
+        ProjectService._update_org_projects) -- a project saved without one
+        is left alone here, not de-associated, since the two flows
+        (legacy Integration vs JiraConnection) are deliberately independent.
+        Must run after the OrgProject rows it references are already
+        committed (update_org_projects), or the FK has nothing to point at.
+        """
+        for connection in connections:
+            self._db.session.merge(connection)
+        self._db.session.commit()
 
     @rollback_on_exc
     def get_existing_team_projects(self, team: Team) -> List[TeamProjects]:
@@ -165,6 +183,31 @@ class ProjectRepoService:
                 OrgProject.org_id == org_id,
                 OrgProject.is_active.is_(True),
                 OrgProject.provider == provider,
+            )
+            .all()
+        )
+
+    @rollback_on_exc
+    def get_active_org_projects_for_connection(
+        self, jira_connection_id: str
+    ) -> List[OrgProject]:
+        """
+        Active projects synced from one JiraConnection -- the read side of
+        the OrgProjectConnection join. See
+        docs/JIRA_MULTI_ACCOUNT_PLAN.md Task 4; the write side (assigning a
+        project to a connection in the first place) is Task 6's project
+        picker, not sync -- sync only ever reads this join, never creates
+        the row.
+        """
+        return (
+            self._db.session.query(OrgProject)
+            .join(
+                OrgProjectConnection,
+                OrgProjectConnection.org_project_id == OrgProject.id,
+            )
+            .filter(
+                OrgProjectConnection.jira_connection_id == jira_connection_id,
+                OrgProject.is_active.is_(True),
             )
             .all()
         )

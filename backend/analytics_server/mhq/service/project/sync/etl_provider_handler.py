@@ -19,6 +19,16 @@ class ProjectProviderETLHandler(ABC):
         """
 
     @abstractmethod
+    def get_org_projects_to_sync(self, org_id: str) -> List[OrgProject]:
+        """
+        Active projects this handler instance is responsible for. Not just
+        "every active project for the org+provider" any more -- a
+        connection-scoped handler (see docs/JIRA_MULTI_ACCOUNT_PLAN.md)
+        must only touch the projects synced from *its* connection, or two
+        connections' handlers would each re-sync the other's projects.
+        """
+
+    @abstractmethod
     def get_project_issues_data(
         self, org_project: OrgProject, bookmark: datetime
     ) -> Tuple[List[Ticket], List[TicketState]]:

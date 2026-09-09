@@ -27,7 +27,13 @@ const putSchema = yup.object().shape({
         key: yup.string().required(),
         name: yup.string().required(),
         provider: yup.string().required(),
-        idempotency_key: yup.string().required()
+        idempotency_key: yup.string().required(),
+        // CLUSTOX: which JiraConnection this project was picked under --
+        // see docs/JIRA_MULTI_ACCOUNT_PLAN.md Task 6 part 2. Optional: a
+        // project from the legacy single-account flow (or a non-Jira
+        // provider) carries none, and yup would otherwise silently strip
+        // this field before it reaches the forwarding call below.
+        connection_id: yup.string().uuid().optional().nullable()
       })
     )
     .required()

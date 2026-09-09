@@ -9,13 +9,16 @@ import { useSnackbar } from 'notistack';
 import { FC, ReactNode, useEffect } from 'react';
 
 import { FlexBox } from '@/components/FlexBox';
+import { JiraConnectionsManager } from '@/components/JiraConnectionsManager';
 import { Line } from '@/components/Text';
 import { track } from '@/constants/events';
 import { FetchState } from '@/constants/ui-states';
 import { jiraIntegrationDisplay } from '@/content/Dashboards/githubIntegration';
 import { useIntegrationHandlers } from '@/content/Dashboards/useIntegrationHandlers';
+import { useModal } from '@/contexts/ModalContext';
 import { useAuth } from '@/hooks/useAuth';
 import { useBoolState } from '@/hooks/useEasyState';
+import { useFeature } from '@/hooks/useFeature';
 import { fetchCurrentOrg } from '@/slices/auth';
 import { useDispatch, useSelector } from '@/store';
 
@@ -24,12 +27,85 @@ const cardBorder = 1.5;
 const getRadiusWithPadding = (radius: number, padding: number) =>
   `${radius + padding}px`;
 
+// CLUSTOX: Jira multi-account support -- see
+// docs/JIRA_MULTI_ACCOUNT_PLAN.md. One Jira card, not two: this used to be
+// a standalone JiraConnectionsCard living beside this one on the
+// integrations page, which read as two unrelated "Jira" tiles to manage.
+// While the flag is on (the default), this card's whole job is opening the
+// connections manager -- the legacy single-account link/unlink flow below
+// only renders while it's off, which is the fallback for whoever disables
+// the flag, not a live second path.
+export const JiraIntegrationCard = () => {
+  const showMultiAccount = useFeature('show_jira_multi_account');
+  if (showMultiAccount) return <JiraMultiAccountCard />;
+  return <LegacyJiraIntegrationCard />;
+};
+
+const JiraMultiAccountCard = () => {
+  const theme = useTheme();
+  const { addModal } = useModal();
+
+  const openManager = () =>
+    addModal({
+      title: 'Jira connections',
+      body: <JiraConnectionsManager />,
+      showCloseIcon: true
+    });
+
+  return (
+    <FlexBox relative data-testid="jira-integration-card">
+      <FlexBox
+        p={`${cardBorder}px`}
+        corner={getRadiusWithPadding(cardRadius, cardBorder)}
+        sx={{ background: jiraIntegrationDisplay.bg }}
+        relative
+        overflow={'unset'}
+      >
+        <FlexBox
+          height="120px"
+          width="280px"
+          corner={`${cardRadius}px`}
+          col
+          p={1.5}
+          relative
+          bgcolor={theme.palette.background.default}
+        >
+          <FlexBox
+            position="absolute"
+            fill
+            top={0}
+            left={0}
+            sx={{ opacity: 0.2, background: jiraIntegrationDisplay.bg }}
+          />
+          <FlexBox alignCenter gap1 fit>
+            <FlexBox fit color={jiraIntegrationDisplay.color}>
+              {jiraIntegrationDisplay.icon}
+            </FlexBox>
+            <Line big medium white>
+              {jiraIntegrationDisplay.name}
+            </Line>
+          </FlexBox>
+          <Line small secondary>
+            Connect one or more Jira sites or accounts
+          </Line>
+          <FlexBox alignCenter gap1 mt="auto">
+            <Button variant="outlined" size="small" onClick={openManager}>
+              Manage connections
+            </Button>
+          </FlexBox>
+        </FlexBox>
+      </FlexBox>
+    </FlexBox>
+  );
+};
+
 // CLUSTOX: mirrors GithubIntegrationCard/GitlabIntegrationCard exactly --
 // same sliceLoading source, same layout, same unlink confirmation flow.
 // Jira Phase 1 (see docs/JIRA_INTEGRATION_PROPOSAL.md) is link-only: no
 // sync, no project picker yet, so there's nothing else for this card to do
-// beyond reflect integrations.jira.
-export const JiraIntegrationCard = () => {
+// beyond reflect integrations.jira. Rendered only while
+// show_jira_multi_account is off -- see JiraIntegrationCard above.
+const LegacyJiraIntegrationCard = () => {
   const theme = useTheme();
   const { integrations } = useAuth();
   const isJiraIntegrated = integrations.jira;

@@ -26,7 +26,10 @@ const baseConfig = {
   isSearching: false,
   isLoading: false,
   isSaving: false,
-  onSave: jest.fn()
+  onSave: jest.fn(),
+  connections: [] as { id: string; site_url: string; email: string; is_default: boolean }[],
+  selectedConnectionId: '',
+  setSelectedConnectionId: jest.fn()
 };
 
 describe('TeamJiraProjects', () => {
@@ -123,5 +126,65 @@ describe('TeamJiraProjects', () => {
     await userEvent.click(screen.getByRole('button', { name: /save/i }));
 
     expect(onSave).toHaveBeenCalledTimes(1);
+  });
+
+  // CLUSTOX: Jira multi-account support. See
+  // docs/JIRA_MULTI_ACCOUNT_PLAN.md Task 6 part 2.
+  describe('connection picker', () => {
+    beforeEach(() => {
+      (useAuth as jest.Mock).mockReturnValue({
+        integrations: { jira: { integrated: true } }
+      });
+    });
+
+    it('is hidden when the org has no Jira connections -- the legacy flow is unchanged', () => {
+      render(<TeamJiraProjects teamId={TEAM_ID} />);
+
+      expect(screen.queryByLabelText('Search projects from')).not.toBeInTheDocument();
+    });
+
+    it('lists the legacy option plus every connection', async () => {
+      (useTeamJiraProjectsConfig as jest.Mock).mockReturnValue({
+        ...baseConfig,
+        connections: [
+          {
+            id: 'conn-1',
+            site_url: 'acme.atlassian.net',
+            email: 'a@acme.com',
+            is_default: true
+          }
+        ]
+      });
+      render(<TeamJiraProjects teamId={TEAM_ID} />);
+
+      await userEvent.click(screen.getByLabelText('Search projects from'));
+
+      expect(screen.getByRole('option', { name: 'Legacy Jira account' })).toBeInTheDocument();
+      expect(
+        screen.getByRole('option', { name: /acme\.atlassian\.net/ })
+      ).toBeInTheDocument();
+    });
+
+    it('calls setSelectedConnectionId when a different connection is picked', async () => {
+      const setSelectedConnectionId = jest.fn();
+      (useTeamJiraProjectsConfig as jest.Mock).mockReturnValue({
+        ...baseConfig,
+        connections: [
+          {
+            id: 'conn-1',
+            site_url: 'acme.atlassian.net',
+            email: 'a@acme.com',
+            is_default: false
+          }
+        ],
+        setSelectedConnectionId
+      });
+      render(<TeamJiraProjects teamId={TEAM_ID} />);
+
+      await userEvent.click(screen.getByLabelText('Search projects from'));
+      await userEvent.click(screen.getByRole('option', { name: /acme\.atlassian\.net/ }));
+
+      expect(setSelectedConnectionId).toHaveBeenCalledWith('conn-1');
+    });
   });
 });

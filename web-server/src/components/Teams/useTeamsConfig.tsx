@@ -63,6 +63,10 @@ interface TeamsCRUDContextType {
   showWorkflowChangeWarning: boolean;
   loadingRepos: boolean;
   handleReposSearch: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  // CLUSTOX: opt-in escape hatch for a Jira-only team -- see
+  // saveDisabled's own comment.
+  isJiraOnlyTeam: boolean;
+  setIsJiraOnlyTeam: (value: boolean) => void;
 }
 
 const TeamsCRUDContext = createContext<TeamsCRUDContextType | undefined>(
@@ -235,6 +239,12 @@ export const TeamsCRUDProvider: React.FC<{
 
   // save team logic
   const isSaveLoading = useBoolState();
+  // CLUSTOX: opt-in escape hatch for an org with only Jira and no Git repo
+  // at all (e.g. a Jira-only project with no GitHub/GitLab/Bitbucket
+  // activity) -- default false, so every existing repo-based team
+  // creation flow is completely unaffected unless an admin explicitly
+  // checks this during creation. See its own checkbox in CreateTeams.tsx.
+  const isJiraOnlyTeam = useBoolState(false);
   const teamCreation = useCallback(
     async (callBack?: AnyFunction) => {
       depFn(isSaveLoading.true);
@@ -357,6 +367,7 @@ export const TeamsCRUDProvider: React.FC<{
       if (!isEditing) {
         depFn(teamName.set, '');
         depFn(selections.set, []);
+        depFn(isJiraOnlyTeam.false);
         return callBack?.();
       }
       depFn(teamName.set, initState.name);
@@ -364,6 +375,7 @@ export const TeamsCRUDProvider: React.FC<{
       return callBack?.();
     },
     [
+      isJiraOnlyTeam.false,
       resetErrors,
       isEditing,
       teamName.set,
@@ -374,8 +386,19 @@ export const TeamsCRUDProvider: React.FC<{
   );
 
   const saveDisabled = useMemo(() => {
+    // CLUSTOX: a repo is required, same as always, *unless* the admin
+    // explicitly checked "Jira-only, no Git repo" while creating this
+    // team -- or the team being edited already started with zero repos
+    // (created that same way), in which case continuing to save it
+    // without one is not a new problem this edit is introducing. Every
+    // other case -- which is every existing repo-based team's create and
+    // edit flow -- keeps the exact original requirement.
+    const repoRequirementMet =
+      Boolean(selections.value.length) ||
+      (!isEditing && isJiraOnlyTeam.value) ||
+      (isEditing && !initState.repos.length);
     const baseConditions =
-      !teamName.value || !selections.value.length || isSaveLoading.value;
+      !teamName.value || !repoRequirementMet || isSaveLoading.value;
     if (isEditing) {
       return (
         baseConditions ||
@@ -388,6 +411,7 @@ export const TeamsCRUDProvider: React.FC<{
     initState.name,
     initState.repos,
     isEditing,
+    isJiraOnlyTeam.value,
     isSaveLoading.value,
     selections.value,
     teamName.value
@@ -438,7 +462,9 @@ export const TeamsCRUDProvider: React.FC<{
     saveDisabled,
     showWorkflowChangeWarning,
     loadingRepos,
-    handleReposSearch
+    handleReposSearch,
+    isJiraOnlyTeam: isJiraOnlyTeam.value,
+    setIsJiraOnlyTeam: isJiraOnlyTeam.set
   };
 
   return (

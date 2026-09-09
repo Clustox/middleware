@@ -126,6 +126,7 @@ def coerce_org_project(project: Dict[str, str]) -> RawTeamOrgProject:
         key=project.get("key"),
         name=project.get("name"),
         idempotency_key=project.get("idempotency_key"),
+        connection_id=project.get("connection_id"),
     )
 
 

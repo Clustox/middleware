@@ -25,6 +25,7 @@ def _raw(
     name="Payments",
     idempotency_key="jira:org-1:10001",
     provider="jira",
+    connection_id=None,
 ) -> RawTeamOrgProject:
     return RawTeamOrgProject(
         team_id=team_id,
@@ -32,6 +33,7 @@ def _raw(
         key=key,
         name=name,
         idempotency_key=idempotency_key,
+        connection_id=connection_id,
     )
 
 
@@ -183,3 +185,119 @@ def test_a_second_team_selecting_an_already_active_project_does_not_touch_the_fi
     assert len(created_team_projects) == 1
     assert str(created_team_projects[0].team_id) == "team-2"
     assert str(created_team_projects[0].org_project_id) == "proj-1"
+
+
+# CLUSTOX: Jira multi-account support -- see
+# docs/JIRA_MULTI_ACCOUNT_PLAN.md Task 6 part 2. The write side of the gap
+# flagged in Task 4: sync only ever reads the OrgProjectConnection join,
+# this is where a project actually gets assigned to a connection.
+class TestOrgProjectConnectionWrites:
+    def test_writes_a_connection_row_for_a_newly_created_project(self):
+        repo = MagicMock()
+        repo.get_projects_by_idempotency_keys.return_value = []
+        repo.update_org_projects.side_effect = lambda projects: projects
+        repo.get_existing_team_projects.return_value = []
+        repo.get_active_org_projects.return_value = []
+        repo.get_org_projects_used_across_teams.return_value = []
+
+        team = FakeTeam()
+        raw = _raw(connection_id="conn-1")
+
+        result = _service(repo).update_team_projects(team, [raw])
+
+        repo.save_org_project_connections.assert_called_once()
+        [saved] = repo.save_org_project_connections.call_args[0][0]
+        assert str(saved.org_project_id) == str(result[0].id)
+        assert saved.jira_connection_id == "conn-1"
+
+    def test_writes_a_connection_row_for_an_existing_project_too(self):
+        existing = OrgProject(
+            id="proj-1",
+            org_id="org-1",
+            key="OLD-KEY",
+            name="Old Name",
+            provider="jira",
+            idempotency_key="jira:org-1:10001",
+            is_active=False,
+        )
+        repo = MagicMock()
+        repo.get_projects_by_idempotency_keys.return_value = [existing]
+        repo.update_org_projects.side_effect = lambda projects: projects
+        repo.get_existing_team_projects.return_value = []
+        repo.get_active_org_projects.return_value = [existing]
+        repo.get_org_projects_used_across_teams.return_value = []
+
+        team = FakeTeam()
+        raw = _raw(connection_id="conn-1")
+
+        _service(repo).update_team_projects(team, [raw])
+
+        [saved] = repo.save_org_project_connections.call_args[0][0]
+        assert str(saved.org_project_id) == "proj-1"
+
+    def test_does_not_write_anything_when_no_project_has_a_connection_id(self):
+        # The legacy single-account flow, and non-Jira providers, must be
+        # completely unaffected -- not even an empty-list call.
+        repo = MagicMock()
+        repo.get_projects_by_idempotency_keys.return_value = []
+        repo.update_org_projects.side_effect = lambda projects: projects
+        repo.get_existing_team_projects.return_value = []
+        repo.get_active_org_projects.return_value = []
+        repo.get_org_projects_used_across_teams.return_value = []
+
+        team = FakeTeam()
+
+        _service(repo).update_team_projects(team, [_raw()])
+
+        repo.save_org_project_connections.assert_not_called()
+
+    def test_connection_rows_are_only_written_for_projects_that_have_one(self):
+        # Two projects in one save: one picked under a connection, one
+        # through the legacy flow. Only the first gets a connection row.
+        repo = MagicMock()
+        repo.get_projects_by_idempotency_keys.return_value = []
+        repo.update_org_projects.side_effect = lambda projects: projects
+        repo.get_existing_team_projects.return_value = []
+        repo.get_active_org_projects.return_value = []
+        repo.get_org_projects_used_across_teams.return_value = []
+
+        team = FakeTeam()
+        with_connection = _raw(idempotency_key="jira:org-1:1", connection_id="conn-1")
+        without_connection = _raw(idempotency_key="jira:org-1:2", connection_id=None)
+
+        result = _service(repo).update_team_projects(
+            team, [with_connection, without_connection]
+        )
+
+        [saved] = repo.save_org_project_connections.call_args[0][0]
+        connected_project = next(
+            p for p in result if p.idempotency_key == "jira:org-1:1"
+        )
+        assert str(saved.org_project_id) == str(connected_project.id)
+
+    def test_saves_org_projects_before_writing_connection_rows(self):
+        # OrgProjectConnection.org_project_id is a real FK -- writing it
+        # before the OrgProject row it points to is committed would fail
+        # in a real database, even though this mocked repo can't catch
+        # that itself.
+        repo = MagicMock()
+        repo.get_projects_by_idempotency_keys.return_value = []
+        repo.get_existing_team_projects.return_value = []
+        repo.get_active_org_projects.return_value = []
+        repo.get_org_projects_used_across_teams.return_value = []
+        calls = []
+        repo.update_org_projects.side_effect = lambda projects: (
+            calls.append("update_org_projects"),
+            projects,
+        )[1]
+        repo.save_org_project_connections.side_effect = lambda _: calls.append(
+            "save_org_project_connections"
+        )
+
+        team = FakeTeam()
+        _service(repo).update_team_projects(team, [_raw(connection_id="conn-1")])
+
+        # update_team_projects makes a second, unrelated update_org_projects
+        # call afterwards (_set_unused_projects_as_inactive) -- only the
+        # relative order of the first two matters here.
+        assert calls[:2] == ["update_org_projects", "save_org_project_connections"]
