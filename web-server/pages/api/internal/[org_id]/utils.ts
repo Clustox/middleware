@@ -380,3 +380,11 @@ export const getBitbucketCredentials = async (org_id: ID) => {
       token: dec(r.access_token_enc_chunks)
     }));
 };
+
+// CLUSTOX: git_provider_org's fetchMap hands each provider one token slot,
+// so the Basic-auth pair travels packed. Consumers split on the FIRST colon
+// -- emails cannot contain colons, Atlassian tokens may.
+export const getBitbucketPackedToken = async (org_id: ID): Promise<string> => {
+  const { email, token } = await getBitbucketCredentials(org_id);
+  return `${email}:${token}`;
+};

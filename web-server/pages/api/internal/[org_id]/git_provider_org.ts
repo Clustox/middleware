@@ -1,6 +1,13 @@
 import * as yup from 'yup';
 
-import { gitlabSearch, searchGithubRepos, getGithubToken, getGitlabToken  } from '@/api/internal/[org_id]/utils';
+import {
+  gitlabSearch,
+  searchGithubRepos,
+  getGithubToken,
+  getGitlabToken,
+  getBitbucketPackedToken
+} from '@/api/internal/[org_id]/utils';
+import { searchBitbucketRepos } from '@/utils/bitbucketRepos';
 import { Endpoint } from '@/api-helpers/global';
 import { Integration } from '@/constants/integrations';
 
@@ -52,5 +59,13 @@ const fetchMap = [
     provider: Integration.GITLAB,
     search: gitlabSearch,
     getToken: getGitlabToken
+  },
+  // CLUSTOX: the phase-1 follow-up ("no UI path to repo listing"). Scoped
+  // Atlassian tokens cannot enumerate workspaces, so the search uses the
+  // workspace-agnostic role=member listing -- see searchBitbucketRepos.
+  {
+    provider: Integration.BITBUCKET,
+    search: searchBitbucketRepos,
+    getToken: getBitbucketPackedToken
   }
 ];
