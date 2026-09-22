@@ -121,8 +121,15 @@ class PullRequestEvent(db.Model):
 class PullRequestCommit(db.Model):
     __tablename__ = "PullRequestCommit"
 
+    # CLUSTOX: composite identity, not hash alone. session.merge dedupes by
+    # this PK -- with hash as the sole key, two workspaces syncing the same
+    # repo made merge() silently steal each other's commit rows (rewriting
+    # pull_request_id), corrupting the other org's first-commit lead time.
+    # Pairs with migration 20260922150000 replacing the hash-only PK.
     hash = db.Column(db.String, primary_key=True)
-    pull_request_id = db.Column(UUID(as_uuid=True), db.ForeignKey("PullRequest.id"))
+    pull_request_id = db.Column(
+        UUID(as_uuid=True), db.ForeignKey("PullRequest.id"), primary_key=True
+    )
     message = db.Column(db.String)
     url = db.Column(db.String)
     data = db.Column(JSONB)
