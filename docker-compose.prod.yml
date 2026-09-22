@@ -32,6 +32,18 @@ volumes:
   dev_keys:
     driver: local
 
+networks:
+  # Pinned to a fixed name so firewalld's trusted-zone entry (added once,
+  # permanently, on the host) survives every future `down`/`up` cycle instead
+  # of needing to re-trust a new random `br-<hash>` name each time. Same
+  # pattern already applied to the hrms stack after the 2026-09-16
+  # ufw->firewalld migration broke random Docker bridge names' NAT/forward
+  # traffic (see docs/runbook.md).
+  default:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: br-middleware
+
 services:
   # Service and container names match docker-compose.yml so that `up -d`
   # replaces the existing container rather than starting a second one that
