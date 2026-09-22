@@ -1,12 +1,13 @@
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict, List, Set, Tuple
 
 from sqlalchemy import func
 from sqlalchemy.orm import defer
 
 from mhq.store import db, rollback_on_exc
 from mhq.store.models.code import OrgRepo, PullRequest, PullRequestState
-from mhq.store.models.projects import OrgProject, Ticket
+from mhq.store.models.code.repository import TeamRepos
+from mhq.store.models.projects import OrgProject, TeamProjects, Ticket
 from mhq.store.models.ticket_matching import PullRequestTicketMapping
 
 
@@ -14,22 +15,89 @@ class TicketMatchingRepoService:
     def __init__(self):
         self._db = db
 
-    @rollback_on_exc
-    def get_org_tickets_key_map(self, org_id: str) -> Dict[str, str]:
+    def _ticket_candidates_by_key(
+        self, org_id: str
+    ) -> Dict[str, List[Tuple[str, str]]]:
         """
-        Uppercased ticket key -> ticket id, for every ticket ever synced
-        for this org (not scoped to a project's is_active -- a ticket
-        that was already synced should stay matchable even if its
-        project is later deselected). One query, used as an in-memory
-        lookup instead of a query per PR.
+        Every (ticket_id, org_project_id) synced for this org, grouped by
+        uppercased ticket key -- not scoped to a project's is_active (a
+        ticket that was already synced should stay matchable even if its
+        project is later deselected). One query; get_org_tickets_key_map
+        and get_colliding_ticket_key_candidates both group its result in
+        memory rather than each querying the tickets table themselves.
         """
-        tickets = (
-            self._db.session.query(Ticket.id, Ticket.key)
+        rows = (
+            self._db.session.query(Ticket.id, Ticket.key, Ticket.org_project_id)
             .join(OrgProject, Ticket.org_project_id == OrgProject.id)
             .filter(OrgProject.org_id == org_id)
             .all()
         )
-        return {key.upper(): str(ticket_id) for ticket_id, key in tickets}
+        by_key: Dict[str, List[Tuple[str, str]]] = {}
+        for ticket_id, key, org_project_id in rows:
+            by_key.setdefault(key.upper(), []).append(
+                (str(ticket_id), str(org_project_id))
+            )
+        return by_key
+
+    @rollback_on_exc
+    def get_org_tickets_key_map(self, org_id: str) -> Dict[str, str]:
+        """
+        Uppercased ticket key -> ticket id, for every key that maps to
+        exactly one ticket org-wide -- the overwhelmingly common case,
+        and the only one multi-account Jira (docs/JIRA_MULTI_ACCOUNT_PLAN.md)
+        changes nothing about. A key two or more tickets share (two
+        connections' sites landing on the same project key -- "Known
+        risks" #2 in that plan) is deliberately excluded here rather than
+        resolved to "whichever the query happened to return last", which
+        is what silently mismatched a PR to the wrong connection's ticket
+        before this existed. get_colliding_ticket_key_candidates is what
+        TicketMatchingService uses to resolve those, per PR.
+        """
+        by_key = self._ticket_candidates_by_key(org_id)
+        return {
+            key: candidates[0][0]
+            for key, candidates in by_key.items()
+            if len(candidates) == 1
+        }
+
+    @rollback_on_exc
+    def get_colliding_ticket_key_candidates(
+        self, org_id: str
+    ) -> Dict[str, List[Tuple[str, str]]]:
+        """
+        Uppercased ticket key -> [(ticket_id, org_project_id), ...], for
+        every key shared by two or more tickets in this org. See
+        get_org_tickets_key_map's own docstring for why these are held
+        back from the main map.
+        """
+        by_key = self._ticket_candidates_by_key(org_id)
+        return {key: c for key, c in by_key.items() if len(c) > 1}
+
+    @rollback_on_exc
+    def get_relevant_org_project_ids_for_repo(self, repo_id: str) -> Set[str]:
+        """
+        Project ids selected (TeamProjects) by any team that also tracks
+        this repo (TeamRepos) -- used only to disambiguate a ticket-key
+        collision across connections (get_colliding_ticket_key_candidates
+        above), never as the default matching scope. Matching stays
+        org-wide otherwise: scoping every PR to its repo's teams' projects
+        by default would break the existing, deliberate "stay matchable
+        even if the project was since deselected" guarantee for the
+        overwhelming majority of orgs that never have a colliding key at
+        all. See docs/JIRA_MULTI_ACCOUNT_PLAN.md Task 5.
+        """
+        rows = (
+            self._db.session.query(TeamProjects.org_project_id)
+            .join(TeamRepos, TeamRepos.team_id == TeamProjects.team_id)
+            .filter(
+                TeamRepos.org_repo_id == repo_id,
+                TeamRepos.is_active.is_(True),
+                TeamProjects.is_active.is_(True),
+            )
+            .distinct()
+            .all()
+        )
+        return {str(project_id) for (project_id,) in rows}
 
     @rollback_on_exc
     def get_unmatched_prs_for_org(self, org_id: str) -> List[PullRequest]:
@@ -37,16 +105,16 @@ class TicketMatchingRepoService:
         PRs for this org with no PullRequestTicketMapping row yet. Not
         "not yet closed" or "recently updated" -- a PR that genuinely
         references no ticket gets re-scanned every cycle (cheap: no API
-        calls, just a regex against a few already-fetched strings), but
-        a PR whose match was already found never gets re-queried.
+        calls, just a regex against PullRequest.title), but a PR whose
+        match was already found never gets re-queried.
 
-        data is NOT deferred here (unlike get_unlinked_merged_prs below)
-        -- the matcher needs PullRequest.description (real data: ~half
-        of this org's "unmatched" PRs turned out to reference a real
-        ticket only in the PR body, e.g. under a "Linked Issue(s)"
-        section, never in the title or branch). Bounded to the unmatched
-        set, not every PR, and only during the periodic sync job, not a
-        hot path -- an acceptable cost for a real, verified match rate.
+        data (which holds description/body) is deferred here, same as
+        get_unlinked_merged_prs below -- matching only ever reads
+        PullRequest.title, its own plain column (see
+        TicketMatchingService's own docstring for why description and
+        head_branch are deliberately never scanned), so there's no
+        reason to pull a potentially large JSONB blob off every unmatched
+        PR just to leave it unused.
         """
         return (
             self._db.session.query(PullRequest)
@@ -59,6 +127,7 @@ class TicketMatchingRepoService:
                 OrgRepo.org_id == org_id,
                 PullRequestTicketMapping.pr_id.is_(None),
             )
+            .options(defer(PullRequest.data))
             .all()
         )
 

@@ -17,6 +17,12 @@ def test_finds_a_lowercased_ticket_key_in_a_branch_name():
     assert keys == ["PZDA-543"]
 
 
+def test_dedupes_the_same_key_appearing_twice_in_one_string():
+    # "PAY-123 Fix PAY-123 payment validation" -- one mention, not two.
+    keys = extract_ticket_keys("PAY-123 Fix PAY-123 payment validation")
+    assert keys == ["PAY-123"]
+
+
 def test_dedupes_the_same_key_appearing_in_both_title_and_branch():
     keys = extract_ticket_keys(
         "fix(PZDA-543): record the accepted policy version",

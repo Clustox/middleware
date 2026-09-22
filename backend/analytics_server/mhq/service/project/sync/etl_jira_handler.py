@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from mhq.exapi.jira import JiraApiService
 from mhq.exapi.models.jira import JiraChangelogEntry, JiraIssue, JiraSprint
@@ -7,6 +7,7 @@ from mhq.service.project.sync.etl_provider_handler import ProjectProviderETLHand
 from mhq.store.models import UserIdentityProvider
 from mhq.store.models.projects import OrgProject, Sprint, Ticket, TicketState
 from mhq.store.repos.core import CoreRepoService
+from mhq.store.repos.jira_connection import JiraConnectionRepoService
 from mhq.store.repos.projects import ProjectRepoService
 from mhq.utils.log import LOG
 from mhq.utils.string import uuid4_str
@@ -18,13 +19,28 @@ class JiraETLHandler(ProjectProviderETLHandler):
         org_id: str,
         jira_api_service: JiraApiService,
         project_repo_service: ProjectRepoService,
+        connection_id: Optional[str] = None,
     ):
         self.org_id = org_id
         self._api = jira_api_service
         self._project_repo_service = project_repo_service
+        # CLUSTOX: None means "the legacy, single-account Integration row" --
+        # see docs/JIRA_MULTI_ACCOUNT_PLAN.md. Both the project scope
+        # (get_org_projects_to_sync) and the ticket idempotency key branch on
+        # this; a JiraConnection-backed handler always passes its own id.
+        self.connection_id = connection_id
 
     def check_pat_validity(self) -> bool:
         return self._api.check_pat()
+
+    def get_org_projects_to_sync(self, org_id: str) -> List[OrgProject]:
+        if self.connection_id:
+            return self._project_repo_service.get_active_org_projects_for_connection(
+                self.connection_id
+            )
+        return self._project_repo_service.get_active_org_projects_for_provider(
+            org_id, UserIdentityProvider.JIRA.value
+        )
 
     def get_project_issues_data(
         self, org_project: OrgProject, bookmark: datetime
@@ -173,6 +189,17 @@ class JiraETLHandler(ProjectProviderETLHandler):
         # Scoped by org_id, not the bare Jira issue id -- same reasoning as
         # OrgProject's idempotency_key: each org's Jira site is
         # independent, so two orgs' sites can land on the same id.
+        #
+        # CLUSTOX: also scoped by connection_id when this handler is
+        # JiraConnection-backed -- two connections in the same org are two
+        # independent Jira sites too, and a bare org_id scope would collide
+        # their small, site-local issue ids (see docs/JIRA_MULTI_ACCOUNT_PLAN.md,
+        # "Known risks" #1). The legacy (connection_id is None) branch keeps
+        # the exact pre-existing key format: changing it would orphan every
+        # ticket already synced through the single-account flow, which the
+        # plan's backward-compat requirement (Task 7) rules out.
+        if self.connection_id:
+            return f"jira:{self.org_id}:{self.connection_id}:{issue.id}"
         return f"jira:{self.org_id}:{issue.id}"
 
     def _ticket_state_idempotency_key(
@@ -182,6 +209,13 @@ class JiraETLHandler(ProjectProviderETLHandler):
 
 
 def get_jira_etl_handler(org_id: str) -> JiraETLHandler:
+    """
+    The legacy, single-account handler -- unchanged, so an org with zero
+    JiraConnection rows syncs exactly as it did before this feature existed
+    (docs/JIRA_MULTI_ACCOUNT_PLAN.md Task 7). connection_id is left at its
+    default (None): this handler's projects and idempotency keys use the
+    original, org-scoped-only shape.
+    """
     core_repo_service = CoreRepoService()
     site_url, email = _get_jira_site_and_email(core_repo_service, org_id)
     api_token = core_repo_service.get_access_token(org_id, UserIdentityProvider.JIRA)
@@ -194,6 +228,39 @@ def get_jira_etl_handler(org_id: str) -> JiraETLHandler:
         JiraApiService(email, api_token, site_url),
         ProjectRepoService(),
     )
+
+
+def get_jira_etl_handlers(org_id: str) -> List[JiraETLHandler]:
+    """
+    docs/JIRA_MULTI_ACCOUNT_PLAN.md Task 4: an org with any JiraConnection
+    rows syncs *only* those connections, one handler each, every handler
+    scoped to its own connection's projects (get_org_projects_to_sync) and
+    its own ticket idempotency-key namespace. An org with none falls back to
+    the single legacy handler above -- this is a strict either/or, not
+    "legacy plus whatever connections exist": the two flows are
+    deliberately independent (see the plan's Global Constraints), so a
+    project the legacy flow already syncs is not re-synced here just
+    because the org later adds a JiraConnection: moving it over is Task 6's
+    project picker, not something sync does on an org's behalf.
+    """
+    jira_connection_repo_service = JiraConnectionRepoService()
+    connections = jira_connection_repo_service.list_jira_connections(org_id)
+    if not connections:
+        return [get_jira_etl_handler(org_id)]
+
+    project_repo_service = ProjectRepoService()
+    handlers = []
+    for connection in connections:
+        access_token = jira_connection_repo_service.decrypt_access_token(connection)
+        handlers.append(
+            JiraETLHandler(
+                org_id,
+                JiraApiService(connection.email, access_token, connection.site_url),
+                project_repo_service,
+                connection_id=str(connection.id),
+            )
+        )
+    return handlers
 
 
 def _get_jira_site_and_email(

@@ -1,4 +1,9 @@
 jest.mock('@/hooks/useAuth', () => ({ useAuth: jest.fn() }));
+jest.mock('@/hooks/useFeature', () => ({ useFeature: jest.fn() }));
+jest.mock('@/contexts/ModalContext', () => ({ useModal: jest.fn() }));
+jest.mock('@/components/JiraConnectionsManager', () => ({
+  JiraConnectionsManager: () => <div>jira-connections-manager-stub</div>
+}));
 jest.mock('@/content/Dashboards/useIntegrationHandlers', () => ({
   useIntegrationHandlers: jest.fn()
 }));
@@ -15,16 +20,24 @@ import { useSnackbar } from 'notistack';
 
 import { JiraIntegrationCard } from '@/content/Dashboards/JiraIntegrationCard';
 import { useIntegrationHandlers } from '@/content/Dashboards/useIntegrationHandlers';
+import { useModal } from '@/contexts/ModalContext';
 import { useAuth } from '@/hooks/useAuth';
+import { useFeature } from '@/hooks/useFeature';
 import { useDispatch, useSelector } from '@/store';
 import { renderWithTheme as render } from '@/utils/testUtils';
 
 const link = { jira: jest.fn() };
 const unlink = { jira: jest.fn().mockResolvedValue(undefined) };
 
+// CLUSTOX: docs/JIRA_MULTI_ACCOUNT_PLAN.md -- this card now branches on
+// show_jira_multi_account. These tests exercise the legacy link/unlink
+// flow specifically, so the flag is pinned off here; see the
+// "multi-account mode" describe block below for the other branch.
 describe('JiraIntegrationCard', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    (useFeature as jest.Mock).mockReturnValue(false);
+    (useModal as jest.Mock).mockReturnValue({ addModal: jest.fn() });
     (useIntegrationHandlers as jest.Mock).mockReturnValue({ link, unlink });
     (useSelector as jest.Mock).mockReturnValue(false); // requests.org !== REQUEST
     (useDispatch as jest.Mock).mockReturnValue(jest.fn());
@@ -109,6 +122,44 @@ describe('JiraIntegrationCard', () => {
     expect(enqueueSnackbar).toHaveBeenCalledWith(
       'Failed to unlink Jira',
       expect.objectContaining({ variant: 'error' })
+    );
+  });
+});
+
+describe('JiraIntegrationCard in multi-account mode', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (useFeature as jest.Mock).mockReturnValue(true);
+    (useIntegrationHandlers as jest.Mock).mockReturnValue({ link, unlink });
+    (useSelector as jest.Mock).mockReturnValue(false);
+    (useDispatch as jest.Mock).mockReturnValue(jest.fn());
+    (useSnackbar as jest.Mock).mockReturnValue({ enqueueSnackbar: jest.fn() });
+    (useAuth as jest.Mock).mockReturnValue({ integrations: {} });
+  });
+
+  it('shows a single "Manage connections" action, not Link/Unlink', () => {
+    (useModal as jest.Mock).mockReturnValue({ addModal: jest.fn() });
+    render(<JiraIntegrationCard />);
+
+    expect(
+      screen.getByRole('button', { name: 'Manage connections' })
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Link')).not.toBeInTheDocument();
+    expect(screen.queryByText('Unlink')).not.toBeInTheDocument();
+  });
+
+  it('opens the connections manager modal on click', async () => {
+    const addModal = jest.fn();
+    (useModal as jest.Mock).mockReturnValue({ addModal });
+    render(<JiraIntegrationCard />);
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Manage connections' })
+    );
+
+    expect(addModal).toHaveBeenCalledTimes(1);
+    expect(addModal).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Jira connections' })
     );
   });
 });

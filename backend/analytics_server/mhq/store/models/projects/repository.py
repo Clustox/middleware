@@ -50,6 +50,28 @@ class TeamProjects(db.Model):
     )
 
 
+class OrgProjectConnection(db.Model):
+    """
+    Which JiraConnection an OrgProject was synced from. A join table rather
+    than a column on OrgProject itself, so OrgProject (and everything that
+    already reads it -- TeamProjects, Ticket, ProjectIssuesBookmark) stays
+    unchanged. No row for a given org_project_id means it came from the
+    legacy single-Jira-account flow (Integration), not a JiraConnection --
+    treat "no row" as "the org's legacy/default Jira", not as an error. See
+    docs/JIRA_MULTI_ACCOUNT_PLAN.md.
+    """
+
+    __tablename__ = "OrgProjectConnection"
+
+    org_project_id = db.Column(
+        UUID(as_uuid=True), db.ForeignKey("OrgProject.id"), primary_key=True
+    )
+    jira_connection_id = db.Column(
+        UUID(as_uuid=True), db.ForeignKey("JiraConnection.id")
+    )
+    created_at = db.Column(db.DateTime(timezone=True), server_default=func.now())
+
+
 class ProjectIssuesBookmark(db.Model):
     """
     Incremental-sync watermark for a project's issue sync, one per

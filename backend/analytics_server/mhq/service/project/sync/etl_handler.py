@@ -30,10 +30,12 @@ class ProjectETLHandler:
             LOG.error("Invalid PAT for project provider")
             return
 
-        org_projects: List[OrgProject] = (
-            self.project_repo_service.get_active_org_projects_for_provider(
-                org_id, provider
-            )
+        # CLUSTOX: which projects to sync is now the handler's own call, not
+        # a blanket "every active project for org+provider" query here -- a
+        # connection-scoped JiraETLHandler must only touch its connection's
+        # own projects. See docs/JIRA_MULTI_ACCOUNT_PLAN.md Task 4.
+        org_projects: List[OrgProject] = self.etl_service.get_org_projects_to_sync(
+            org_id
         )
         for org_project in org_projects:
             try:
@@ -103,16 +105,34 @@ def sync_project_issues(org_id: str) -> None:
 
     for provider in providers:
         try:
-            project_etl_handler = ProjectETLHandler(
-                ProjectRepoService(),
-                etl_factory(provider),
-                get_bookmark_service(),
-            )
-            project_etl_handler.sync_org_projects(org_id, provider)
-            LOG.info(f"Synced org project issues for provider {provider}")
+            # CLUSTOX: one provider can now resolve to several handlers --
+            # one per JiraConnection, see docs/JIRA_MULTI_ACCOUNT_PLAN.md
+            # Task 4. Sequential on purpose: N connections make N sync
+            # passes, same as N providers already did, and the whole call
+            # already runs inside the per-org "{org_id}:data_sync" Redis
+            # lock (mhq/api/sync.py) -- nothing here runs concurrently, so
+            # no new lock or connection-scoped isolation primitive is
+            # needed for this.
+            etl_services = etl_factory(provider)
         except Exception as e:
-            LOG.error(
-                f"Error syncing org project issues for provider {provider}: {str(e)}"
-            )
+            LOG.error(f"Error building ETL handlers for provider {provider}: {str(e)}")
             continue
+
+        for etl_service in etl_services:
+            try:
+                project_etl_handler = ProjectETLHandler(
+                    ProjectRepoService(),
+                    etl_service,
+                    get_bookmark_service(),
+                )
+                project_etl_handler.sync_org_projects(org_id, provider)
+            except Exception as e:
+                # One connection's failure must not stop its siblings' --
+                # the same reasoning as the per-project try/except above,
+                # one level up.
+                LOG.error(
+                    f"Error syncing org project issues for provider {provider}: {str(e)}"
+                )
+                continue
+        LOG.info(f"Synced org project issues for provider {provider}")
     LOG.info(f"Synced all org project issues for org {org_id}")

@@ -32,6 +32,17 @@ import {
 import { db, dbRaw, getFirstRow } from '@/utils/db';
 import groupBy from '@/utils/objectArray';
 
+// CLUSTOX: every code provider a team's repos can actually come from --
+// see this constant's two call sites below for the bug this fixes
+// (Bitbucket repos silently excluded from both the team list's repo
+// count and the edit form's repo picker). Mirrors
+// ClustoxJenkinsMapping.tsx's own codeProviders list.
+const GIT_CODE_PROVIDERS = [
+  Integration.GITHUB,
+  Integration.GITLAB,
+  Integration.BITBUCKET
+];
+
 const repoSchema = yup.object().shape({
   idempotency_key: yup.string().required(),
   deployment_type: yup.string().required(),
@@ -92,9 +103,16 @@ endpoint.handle.GET(getSchema, async (req, res) => {
   const teams = await getQuery;
   const teamReposMap = await getTeamReposMap(
     org_id,
-    providers?.length
-      ? (providers as Integration[])
-      : [Integration.GITHUB, Integration.GITLAB]
+    // CLUSTOX: a real, live user-reported bug -- this default previously
+    // omitted Bitbucket, so a team whose only repo was a Bitbucket one
+    // showed "0 Repositories" on the team list and (this map is also
+    // what the edit form's initial repo selection is built from) an
+    // empty repo picker when editing it, even though the repo was
+    // genuinely saved and DORA metrics for it were computing correctly
+    // (that path already scoped its own query independently). Every
+    // code provider a team can actually have repos from, not just the
+    // two this happened to be written against first.
+    providers?.length ? (providers as Integration[]) : GIT_CODE_PROVIDERS
   );
 
   // CLUSTOX: an admin must only see their assigned teams in the picker.
@@ -321,7 +339,12 @@ const updateReposWorkflows = async (
       .whereIn('name', reposForWorkflows)
       .where('org_id', org_id)
       .andWhere('is_active', true)
-      .and.whereIn('provider', [Integration.GITHUB, Integration.GITLAB]);
+      // CLUSTOX: was missing Bitbucket here -- silently dead code, since
+      // the CIRCLE_CI branch just below explicitly handles
+      // Integration.BITBUCKET but this filter meant dbReposForWorkflows
+      // (and therefore groupedRepos) could never actually contain one.
+      // Same bug as GIT_CODE_PROVIDERS' other call site above.
+      .and.whereIn('provider', GIT_CODE_PROVIDERS);
 
     const groupedRepos = groupBy(dbReposForWorkflows, 'name');
 

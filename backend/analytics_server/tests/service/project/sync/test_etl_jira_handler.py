@@ -1,8 +1,11 @@
 from datetime import datetime
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from mhq.exapi.models.jira import JiraIssue
-from mhq.service.project.sync.etl_jira_handler import JiraETLHandler
+from mhq.service.project.sync.etl_jira_handler import (
+    JiraETLHandler,
+    get_jira_etl_handlers,
+)
 from mhq.store.models.projects import OrgProject, Ticket, TicketState
 
 # CLUSTOX: Jira integration, Phase 2 (issue sync). See
@@ -52,9 +55,12 @@ def _status_change(history_id="100", from_status="To Do", to_status="In Progress
     }
 
 
-def _handler(api=None, project_repo_service=None) -> JiraETLHandler:
+def _handler(api=None, project_repo_service=None, connection_id=None) -> JiraETLHandler:
     return JiraETLHandler(
-        ORG_ID, api or MagicMock(), project_repo_service or MagicMock()
+        ORG_ID,
+        api or MagicMock(),
+        project_repo_service or MagicMock(),
+        connection_id=connection_id,
     )
 
 
@@ -300,3 +306,151 @@ class TestGetProjectSprintsData:
         sprints = _handler(api, repo).get_project_sprints_data(_org_project())
 
         assert {s.external_id for s in sprints} == {"101", "201"}
+
+
+# CLUSTOX: Jira multi-account support. See docs/JIRA_MULTI_ACCOUNT_PLAN.md
+# Task 4.
+class TestConnectionScopedIdempotencyKey:
+    def test_legacy_handler_keeps_the_original_key_shape(self):
+        api = MagicMock()
+        api.get_all_issues.return_value = [_issue("1")]
+        repo = MagicMock()
+        repo.get_tickets_by_idempotency_keys.return_value = []
+        repo.get_ticket_states_by_idempotency_keys.return_value = []
+
+        tickets, _ = _handler(api, repo).get_project_issues_data(
+            _org_project(), datetime(2024, 1, 1)
+        )
+
+        # Not just "some format" -- byte-identical to what a pre-existing
+        # ticket for this org already has as its idempotency_key, or this
+        # sync would stop reusing the row and start duplicating it.
+        assert tickets[0].idempotency_key == f"jira:{ORG_ID}:1"
+
+    def test_connection_scoped_handler_includes_the_connection_id(self):
+        api = MagicMock()
+        api.get_all_issues.return_value = [_issue("1")]
+        repo = MagicMock()
+        repo.get_tickets_by_idempotency_keys.return_value = []
+        repo.get_ticket_states_by_idempotency_keys.return_value = []
+
+        tickets, _ = _handler(
+            api, repo, connection_id="conn-1"
+        ).get_project_issues_data(_org_project(), datetime(2024, 1, 1))
+
+        assert tickets[0].idempotency_key == f"jira:{ORG_ID}:conn-1:1"
+
+    def test_two_connections_do_not_collide_on_the_same_bare_issue_id(self):
+        # The regression Task 4 exists to close: two connections' sites can
+        # each have their own small, site-local issue id "1". Without
+        # connection scoping both would idempotency-key to "jira:org-1:1"
+        # and the second connection's ticket would silently overwrite the
+        # first's.
+        api = MagicMock()
+        api.get_all_issues.return_value = [_issue("1")]
+        repo = MagicMock()
+        repo.get_tickets_by_idempotency_keys.return_value = []
+        repo.get_ticket_states_by_idempotency_keys.return_value = []
+
+        tickets_a, _ = _handler(
+            api, repo, connection_id="conn-a"
+        ).get_project_issues_data(_org_project(), datetime(2024, 1, 1))
+        tickets_b, _ = _handler(
+            api, repo, connection_id="conn-b"
+        ).get_project_issues_data(_org_project(), datetime(2024, 1, 1))
+
+        assert tickets_a[0].idempotency_key != tickets_b[0].idempotency_key
+
+
+class TestGetOrgProjectsToSync:
+    def test_legacy_handler_reads_every_active_project_for_the_org_and_provider(self):
+        repo = MagicMock()
+        repo.get_active_org_projects_for_provider.return_value = ["proj-a", "proj-b"]
+
+        projects = _handler(project_repo_service=repo).get_org_projects_to_sync(ORG_ID)
+
+        repo.get_active_org_projects_for_provider.assert_called_once_with(
+            ORG_ID, "jira"
+        )
+        repo.get_active_org_projects_for_connection.assert_not_called()
+        assert projects == ["proj-a", "proj-b"]
+
+    def test_connection_scoped_handler_reads_only_its_own_connections_projects(self):
+        repo = MagicMock()
+        repo.get_active_org_projects_for_connection.return_value = ["proj-a"]
+
+        projects = _handler(
+            project_repo_service=repo, connection_id="conn-1"
+        ).get_org_projects_to_sync(ORG_ID)
+
+        repo.get_active_org_projects_for_connection.assert_called_once_with("conn-1")
+        repo.get_active_org_projects_for_provider.assert_not_called()
+        assert projects == ["proj-a"]
+
+
+class TestGetJiraEtlHandlers:
+    def test_falls_back_to_the_single_legacy_handler_when_the_org_has_no_connections(
+        self,
+    ):
+        with patch(
+            "mhq.service.project.sync.etl_jira_handler.JiraConnectionRepoService"
+        ) as connection_repo_cls, patch(
+            "mhq.service.project.sync.etl_jira_handler.get_jira_etl_handler"
+        ) as get_legacy_handler:
+            connection_repo_cls.return_value.list_jira_connections.return_value = []
+            legacy_handler = MagicMock()
+            get_legacy_handler.return_value = legacy_handler
+
+            handlers = get_jira_etl_handlers(ORG_ID)
+
+        assert handlers == [legacy_handler]
+
+    def test_builds_one_handler_per_connection_with_its_own_credentials(self):
+        connection_a = MagicMock(
+            id="conn-a", email="a@acme.com", site_url="acme.atlassian.net"
+        )
+        connection_b = MagicMock(
+            id="conn-b", email="b@other.com", site_url="other.atlassian.net"
+        )
+
+        with patch(
+            "mhq.service.project.sync.etl_jira_handler.JiraConnectionRepoService"
+        ) as connection_repo_cls, patch(
+            "mhq.service.project.sync.etl_jira_handler.JiraApiService"
+        ) as api_service_cls:
+            connection_repo_service = connection_repo_cls.return_value
+            connection_repo_service.list_jira_connections.return_value = [
+                connection_a,
+                connection_b,
+            ]
+            connection_repo_service.decrypt_access_token.side_effect = [
+                "token-a",
+                "token-b",
+            ]
+
+            handlers = get_jira_etl_handlers(ORG_ID)
+
+        assert [h.connection_id for h in handlers] == ["conn-a", "conn-b"]
+        assert api_service_cls.call_args_list == [
+            (("a@acme.com", "token-a", "acme.atlassian.net"),),
+            (("b@other.com", "token-b", "other.atlassian.net"),),
+        ]
+
+    def test_never_calls_the_legacy_handler_when_any_connection_exists(self):
+        # The plan's strict either/or: a JiraConnection-backed org does not
+        # also sync through the legacy Integration row, even if that row
+        # still exists (see get_jira_etl_handlers's own docstring).
+        with patch(
+            "mhq.service.project.sync.etl_jira_handler.JiraConnectionRepoService"
+        ) as connection_repo_cls, patch(
+            "mhq.service.project.sync.etl_jira_handler.JiraApiService"
+        ), patch(
+            "mhq.service.project.sync.etl_jira_handler.get_jira_etl_handler"
+        ) as get_legacy_handler:
+            connection_repo_cls.return_value.list_jira_connections.return_value = [
+                MagicMock(id="conn-a")
+            ]
+
+            get_jira_etl_handlers(ORG_ID)
+
+        get_legacy_handler.assert_not_called()

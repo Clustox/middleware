@@ -36,8 +36,10 @@ from mhq.api.request_utils import (
     coerce_team_repos,
     dataschema,
     queryschema,
+    uuid_validator,
 )
 from mhq.service.query_validator import get_query_validator
+from mhq.store.repos.team_repo_project_mapping import TeamRepoProjectMappingRepoService
 
 app = Blueprint("teams", __name__)
 
@@ -214,6 +216,76 @@ def update_team_projects(team_id: str, projects: List[RawTeamOrgProject]):
     updated_org_projects = project_service.update_team_projects(team, projects)
 
     return adapt_org_projects(updated_org_projects)
+
+
+# CLUSTOX: explicit, informational repo<->Jira-project pairing -- see
+# docs/JIRA_MULTI_ACCOUNT_PLAN.md's follow-up on Jira<->repo relationships
+# and TeamRepoProjectMapping's own docstring for why this never drives
+# PR<->ticket matching. Same "GET the current set / PUT the full
+# replacement set" shape as /teams/<team_id>/projects above.
+@app.route("/teams/<team_id>/repo_project_mappings", methods={"GET"})
+def fetch_team_repo_project_mappings(team_id: str):
+    query_validator = get_query_validator()
+    team: Team = query_validator.team_validator(team_id)
+
+    mappings = TeamRepoProjectMappingRepoService().get_mappings_for_team(team.id)
+    return [
+        {
+            "org_repo_id": str(mapping.org_repo_id),
+            "org_project_id": str(mapping.org_project_id),
+        }
+        for mapping in mappings
+    ]
+
+
+@app.route("/teams/<team_id>/repo_project_mappings", methods={"PUT"})
+@dataschema(
+    Schema(
+        {
+            Required("mappings"): [
+                {
+                    Required("org_repo_id"): All(str, Coerce(uuid_validator)),
+                    Required("org_project_id"): All(str, Coerce(uuid_validator)),
+                }
+            ],
+        }
+    ),
+)
+def update_team_repo_project_mappings(team_id: str, mappings: List[Dict[str, str]]):
+    query_validator = get_query_validator()
+    team: Team = query_validator.team_validator(team_id)
+
+    # Informational only, but a pair naming a repo or project this team
+    # hasn't actually selected would be a mapping to nothing meaningful --
+    # rejected rather than silently stored, same "fail loud at the
+    # boundary" convention the rest of this API follows.
+    team_repo_ids = {
+        str(repo.id) for repo in get_repository_service().get_team_repos(team)
+    }
+    team_project_ids = {
+        str(project.id) for project in get_project_service().get_team_projects(team)
+    }
+    for mapping in mappings:
+        if mapping["org_repo_id"] not in team_repo_ids:
+            raise BadRequest(
+                f"Repo {mapping['org_repo_id']} is not tracked by team {team_id}."
+            )
+        if mapping["org_project_id"] not in team_project_ids:
+            raise BadRequest(
+                f"Project {mapping['org_project_id']} is not tracked by team {team_id}."  # noqa E501
+            )
+
+    saved = TeamRepoProjectMappingRepoService().set_mappings_for_team(
+        team.id,
+        [(mapping["org_repo_id"], mapping["org_project_id"]) for mapping in mappings],
+    )
+    return [
+        {
+            "org_repo_id": str(mapping.org_repo_id),
+            "org_project_id": str(mapping.org_project_id),
+        }
+        for mapping in saved
+    ]
 
 
 # CLUSTOX: Jira integration, Phase 4 (§6C/§6E) -- the DORA Metrics page's

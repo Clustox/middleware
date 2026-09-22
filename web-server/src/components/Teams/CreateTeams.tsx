@@ -5,8 +5,10 @@ import {
   Autocomplete,
   Button,
   Card,
+  Checkbox,
   CircularProgress,
   Divider,
+  FormControlLabel,
   MenuItem,
   Select,
   Table,
@@ -42,6 +44,7 @@ import { trimWithEllipsis } from '@/utils/stringFormatting';
 
 import { BatchImportModal } from './BatchImportModal';
 import { TeamJiraProjects } from './TeamJiraProjects';
+import { TeamRepoProjectMappings } from './TeamRepoProjectMappings';
 
 import AnimatedInputWrapper from '../AnimatedInputWrapper/AnimatedInputWrapper';
 import { FlexBox } from '../FlexBox';
@@ -108,6 +111,14 @@ const TeamsCRUD: FC<CRUDProps> = ({ onSave, onDiscard, teamId }) => {
                     title="Jira integration"
                   >
                     <TeamJiraProjects teamId={teamId} />
+                    {/* CLUSTOX: explicit, informational repo<->project
+                        pairing -- see docs/JIRA_MULTI_ACCOUNT_PLAN.md's
+                        follow-up on Jira<->repo relationships. Lives in
+                        the same section as the project picker above
+                        (rather than its own DataSourceSection) since it
+                        only ever makes sense once that picker already has
+                        a selection to pair against. */}
+                    <TeamRepoProjectMappings teamId={teamId} />
                   </DataSourceSection>
                 </>
               )}
@@ -215,7 +226,10 @@ const TeamRepos: FC = () => {
     selectedRepos,
     raiseTeamRepoError,
     loadingRepos,
-    handleReposSearch
+    handleReposSearch,
+    isEditing,
+    isJiraOnlyTeam,
+    setIsJiraOnlyTeam
   } = useTeamCRUD();
   const { addModal, closeModal } = useModal();
 
@@ -275,6 +289,22 @@ const TeamRepos: FC = () => {
         </Line>
         <Line>Select repositories for this team using name or link</Line>
       </FlexBox>
+      {/* CLUSTOX: opt-in escape hatch for a Jira-only org (no Git repo at
+          all) -- create-time only, and off by default, so every existing
+          repo-based team creation flow is completely unaffected unless an
+          admin explicitly checks this. See saveDisabled's own comment in
+          useTeamsConfig.tsx. */}
+      {!isEditing && (
+        <FormControlLabel
+          control={
+            <Checkbox
+              checked={isJiraOnlyTeam}
+              onChange={(e) => setIsJiraOnlyTeam(e.target.checked)}
+            />
+          }
+          label="This team has no Git repository (Jira-only)"
+        />
+      )}
       <Box display="flex" alignItems="center" gap={2}>
         <Autocomplete
           noOptionsText={
@@ -399,7 +429,9 @@ const ActionTray: FC<CRUDProps> = ({
     teamName,
     selectedRepos,
     onDiscard,
-    saveDisabled
+    saveDisabled,
+    isEditing,
+    isJiraOnlyTeam
   } = useTeamCRUD();
   const { enqueueSnackbar } = useSnackbar();
 
@@ -413,7 +445,12 @@ const ActionTray: FC<CRUDProps> = ({
               autoHideDuration: 2000
             });
           }
-          if (!selectedRepos.length) {
+          // CLUSTOX: unchanged from before -- still required by default.
+          // The only way past this is the explicit "Jira-only, no Git
+          // repo" checkbox below, or (while editing) a team that already
+          // started with zero repos -- see saveDisabled's own comment in
+          // useTeamsConfig.tsx.
+          if (!selectedRepos.length && !(isJiraOnlyTeam && !isEditing)) {
             return enqueueSnackbar('Please select at least one repository', {
               variant: 'error',
               autoHideDuration: 2000
