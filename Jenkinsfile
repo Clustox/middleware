@@ -185,25 +185,19 @@ pipeline {
     }
 
     post {
+        // CLUSTOX: uses the Jenkins-wide Slack Notification Plugin config
+        // (Manage Jenkins > System > Slack), the same mechanism that already
+        // posts to #gpu-jenkins-build for every job on this controller. The
+        // previous approach (`withCredentials` + curl against a per-job
+        // 'slack-webhook-ci-build-alerts' secret) failed every build's post
+        // action because that credential was never created.
         success {
             echo 'Deployment succeeded.'
-            withCredentials([string(credentialsId: 'slack-webhook-ci-build-alerts', variable: 'SLACK_WEBHOOK_URL')]) {
-                sh '''
-                    curl -X POST -H "Content-type: application/json" \
-                    --data "{\\"text\\":\\"✅ *middleware* deployment succeeded — build #${BUILD_NUMBER} — ${BUILD_URL}\\"}" \
-                    "$SLACK_WEBHOOK_URL"
-                '''
-            }
+            slackSend(color: 'good', message: "✅ *middleware* deployment succeeded — build #${BUILD_NUMBER} — ${BUILD_URL}")
         }
         failure {
             echo 'Deployment failed - check console output.'
-            withCredentials([string(credentialsId: 'slack-webhook-ci-build-alerts', variable: 'SLACK_WEBHOOK_URL')]) {
-                sh '''
-                    curl -X POST -H "Content-type: application/json" \
-                    --data "{\\"text\\":\\"❌ *middleware* deployment failed — build #${BUILD_NUMBER} — ${BUILD_URL}\\"}" \
-                    "$SLACK_WEBHOOK_URL"
-                '''
-            }
+            slackSend(color: 'danger', message: "❌ *middleware* deployment failed — build #${BUILD_NUMBER} — ${BUILD_URL}")
         }
     }
 }
